@@ -77,7 +77,7 @@ class CameraSetupWorker(QThread):
                 return
             for cam in prefs.get('cams', []):
                 if cam.get('driver', '').lower() in valid_drivers:
-                    writer_dict = {**prefs.get('recorder_params', {}), **cam.get('recorder_params', {})}
+                    writer_dict = prefs.get('recorder_params', {})
                     cam_handler = CameraHandler(cam, writer_dict)
                     if cam_handler.camera_connected:
                         cam_handlers.append((cam, cam_handler))

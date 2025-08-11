@@ -1,12 +1,26 @@
 {
     "cams": [
         {
-            "description": "Hamamatsu Orca",
+            "description": "Orca",
             "driver": "hamamatsu",
             "serial_number": "003024",
             "params": {
+                "frame_rate":10,
 				"binning": 4,
 				"exposure": 0.040
+            }
+        },
+        {
+            "description": "dalsa1",
+            "driver": "genicam",
+            "serial_number": "H2260407",
+            "params": {
+                "exposure": 1000,
+                "frame_rate": 10,
+                "n_frames": 1,
+                "binning": 1,
+                "trigger_mode": "Off",
+                "trigger_source": "Line1"
             }
         },
         {
@@ -15,15 +29,11 @@
             "serial_number": "H2260415",
             "params": {
                 "exposure": 1500,
-                "frame_rate": 10,
+                "frame_rate": 20,
                 "n_frames": 1,
                 "binning": 1,
                 "trigger_mode": "Off",
                 "trigger_source": "Line1"
-            },
-            "recorder_params": {
-                "recorder": "opencv",
-                "folder": "test"
             }
         },
         {
@@ -33,15 +43,8 @@
             "params": {
                 "exposure": 1500,
                 "frame_rate": 30,
-                "gain": 4,
-                "n_frames": 1,
-                "binning": 1,
                 "trigger_mode": "Off",
                 "trigger_source": "Line1"
-            },
-            "recorder_params": {
-                "recorder": "opencv",
-                "folder": "test"
             }
         }
 			
@@ -49,8 +52,8 @@
     "recorder_params": {
         "compress": 0,
         "data_folder": "I:\\mouselab\\data",
-        "experiment_folder": "EXP_TEST",
-        "recorder": "tiff",
+        "experiment_folder": "exp",
+        "recorder": "opencv",
 		"recorder_sleep_time":0.05
     },
     "server_params": {

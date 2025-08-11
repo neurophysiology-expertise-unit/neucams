@@ -1,160 +1,165 @@
-# --- force Vimba DLLs from our bundle ---------------------------------
+# neucams/cams/avt_cam.py
 import os, sys, ctypes
 from pathlib import Path
 import numpy as np
 from multiprocessing import shared_memory
 
-
+# ---------- optional: prefer bundled vmbpy/VmbC if present ----------
 BASE    = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 AVT_DIR = BASE / "vmbpy"
 PLUGS   = AVT_DIR / "plugins"
 
 def _add_dir(p: Path):
     if p.exists():
-        # Prepend to PATH (legacy loader)
         os.environ["PATH"] = str(p) + os.pathsep + os.environ.get("PATH", "")
-        # Hint for Py 3.8+ / Win10+
         if hasattr(os, "add_dll_directory"):
             os.add_dll_directory(str(p))
 
-# Add both dirs
-_add_dir(AVT_DIR)
-_add_dir(PLUGS)
+#_add_dir(AVT_DIR)
+#_add_dir(PLUGS)
 
-# Preload core DLL so vmbpy binds to ours, not site-packages
-core_dll = AVT_DIR / "VmbC.dll"
-if core_dll.exists():
+if (AVT_DIR / "__init__.py").exists():
+    sys.path.insert(0, str(BASE))
+
+core = AVT_DIR / "VmbC.dll"
+if core.exists():
     try:
-        ctypes.WinDLL(str(core_dll))
-    except OSError as e:
-        print("Failed to preload VmbC.dll:", e)
+        ctypes.WinDLL(str(core))
+    except OSError:
+        pass
 
-# --- NOW import vmbpy --------------------------------------------------
-from vmbpy import (
-    VmbSystem,
-    Frame, Camera, PixelFormat,
-    VmbFeatureError, VmbTimeout,
-)
+# ---------- vmbpy ----------
+from vmbpy import VmbSystem, PixelFormat, VmbTimeout
 
 from .generic_cam import GenericCam
 from neucams.utils import display
 
 
-# ----------------------------------------------------------------------
-# helper: attribute-style feature setter
-def _set(cam: Camera, feat_name: str, value):
-    """Set any feature by name."""
+def _has(cam, feat: str) -> bool:
+    return hasattr(cam, feat)
+
+def _auto_mode(val):
+    if isinstance(val, bool):
+        return "Continuous" if val else "Off"
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in ("off", "once", "continuous"):
+            return s.capitalize()
+    return None
+
+def _clamp_to_node_range(node, value: float) -> float:
     try:
-        getattr(cam, feat_name).set(value)
-    except AttributeError as e:
-        raise VmbFeatureError(f"Feature '{feat_name}' not found") from e
-# ----------------------------------------------------------------------
-
-
-def debug_pickle(obj, prefix=''):
-    import pickle, collections.abc
-    try:
-        pickle.dumps(obj)
-        # print(prefix, '✅ picklable', type(obj))
-        pass
-    except Exception as e:
-        # print(prefix, '❌ NOT picklable', type(obj), '→', e)
-        if isinstance(obj, (list, tuple, set)):
-            for i, item in enumerate(obj):
-                debug_pickle(item, prefix + f'  [{i}] ')
-        elif isinstance(obj, dict):
-            for k, v in obj.items():
-                debug_pickle(k, prefix + '  {key} ')
-                debug_pickle(obj[k], prefix + f'  {k}: ')
-
-
-def AVT_get_ids():
-    """Return ([ids], [pretty strings]) for all connected Allied Vision cams."""
-    with VmbSystem.get_instance() as vmb:
-        ids, infos = [], []
-        for c in vmb.get_all_cameras():
-            ids.append(c.get_id())
-            infos.append(f"{c.get_model()} {c.get_serial()} {c.get_id()}")
-    return ids, infos
+        lo, hi = node.get_range()
+        v = min(max(float(value), float(lo)), float(hi))
+        try:
+            inc = node.get_increment()
+            if inc and inc > 0:
+                v = lo + round((v - lo) / inc) * inc
+        except Exception:
+            pass
+        return float(v)
+    except Exception:
+        return float(value)
 
 
 class AVTCam(GenericCam):
-    """Allied Vision camera wrapper updated for vmbpy."""
+    """Allied Vision camera via Vimba X (vmbpy). Emits SHM tuples for frames."""
+    timeout = 2000  # ms
 
-    timeout = 2_000  # ms
+    def __init__(self, cam_id=None, params=None, format=None, serial_number=None):
+        self.serial_number = serial_number
 
-    # ------------------------------------------------------------------
-    def __init__(self, cam_id=None, params=None, format=None):
-        ids, _ = AVT_get_ids()
-        if cam_id is None and ids:
-            cam_id = ids[0]
+        defaults = {
+            "exposure": 20000.0,          # µs
+            "frame_rate": 30.0,           # Hz (free-run only)
+            "gain": 0.0,                  # dB
+            "gain_auto": "Off",           # 'Off'|'Once'|'Continuous' or bool
+            "exposure_auto": "Off",
+            "acquisition_mode": "Continuous",
+            "n_frames": 1,
+            "triggered": False,           # convenience flag
+            "trigger_mode": "Off",        # convenience string
+            "trigger_source": "Line1",
+            "trigger_activation": "RisingEdge",
+            "binning": 1,
+        }
+        fmt = {"dtype": np.uint8}
 
         super().__init__(
             name="AVT",
             cam_id=cam_id,
-            params=params or {},
-            format=format or {},
+            params={**defaults, **(params or {})},
+            format={**fmt, **(format or {})},
         )
 
-        default_params = {
-            "exposure": 29_000,              # µs
-            "frame_rate": 30,
-            "gain": 10,
-            "gain_auto": False,
-            "acquisition_mode": "Continuous",
-            "n_frames": 1,
-            "triggered": False,
-            "triggerSource": "Line1",
-            "triggerMode": "LevelHigh",
-            "triggerSelector": "FrameStart",
-        }
         self.exposed_params = [
-            "frame_rate", "gain", "exposure", "gain_auto",
-            "triggered", "acquisition_mode", "n_frames",
+            "frame_rate", "gain", "exposure", "gain_auto", "exposure_auto",
+            "triggered", "trigger_mode", "trigger_source", "trigger_activation",
+            "acquisition_mode", "n_frames", "binning",
         ]
-        self.params = {**default_params, **self.params}
 
-        default_format = {"dtype": np.uint8}
-        self.format = {**default_format, **self.format}
-
-        # internal state
-        self.cam_handle = None
         self.vimba = None
-        self.frame_generator = None
+        self.cam_handle = None
+        self._gen = None
         self.is_recording = False
 
-    # ------------------------------------------------------------------
-    # connection helpers
-    # ------------------------------------------------------------------
-    def is_connected(self):
-        ids, _ = AVT_get_ids()
-        if self.cam_id in ids:
-            display(f"Requested AVT cam detected: {self.cam_id}")
-            return True
-        display(f"Requested AVT cam **not** detected: {self.cam_id}", level="error")
+    # ---------- API used by CameraHandler ----------
+    def set_param(self, key, value):
+        self.params[key] = value
+
+    def is_connected(self) -> bool:
+        try:
+            with VmbSystem.get_instance() as vmb:
+                for c in vmb.get_all_cameras():
+                    if self.cam_id and c.get_id() == self.cam_id:
+                        return True
+                    if self.serial_number and hasattr(c, "get_serial") and c.get_serial() == self.serial_number:
+                        return True
+        except Exception:
+            pass
         return False
 
-    # ------------------------------------------------------------------
-    # context management
-    # ------------------------------------------------------------------
     def __enter__(self):
-        if not self.is_connected():
+        self.vimba = VmbSystem.get_instance(); self.vimba.__enter__()
+
+        # Resolve serial -> id *after* Vimba is up
+        if not self.cam_id and self.serial_number:
+            for c in self.vimba.get_all_cameras():
+                try:
+                    if hasattr(c, "get_serial") and c.get_serial() == self.serial_number:
+                        self.cam_id = c.get_id()
+                        break
+                except Exception:
+                    continue
+
+        if not self.cam_id:
+            display(f"[AVT] Could not resolve camera (serial={self.serial_number}).", level="error")
             return self
 
-        self.vimba = VmbSystem.get_instance()
-        self.vimba.__enter__()
-
-        for cam in self.vimba.get_all_cameras():
-            if cam.get_id() == self.cam_id:
-                self.cam_handle = cam
+        for c in self.vimba.get_all_cameras():
+            if c.get_id() == self.cam_id:
+                self.cam_handle = c
                 break
-        if self.cam_handle is None:
-            display(f"Camera {self.cam_id} vanished.", level="error")
+
+        if not self.cam_handle:
+            display(f"[AVT] Camera {self.cam_id} vanished.", level="error")
             return self
 
         self.cam_handle.__enter__()
+
+        # Safe default pixel format
+        try:
+            self.cam_handle.set_pixel_format(PixelFormat.Mono8)
+        except Exception:
+            pass
+
+        # Apply params before streaming
         self.apply_params()
-        self._record()
+
+        # Start synchronous stream loop
+        self._start_stream()
+
+        # Learn format once (blocking read)
         self._init_format()
         return self
 
@@ -169,183 +174,223 @@ class AVTCam(GenericCam):
                 self.vimba.__exit__(exc_type, exc_val, exc_tb)
         return False
 
-    # ------------------------------------------------------------------
-    # parameter handling
-    # ------------------------------------------------------------------
+    # ---------- Params ----------
     def apply_params(self):
         if not self.cam_handle:
-            display("apply_params() called before camera opened", level="warning")
+            display("[AVT] apply_params() before open", level="warning")
             return
 
-        resume_recording = self.is_recording
-        if self.is_recording:
+        was = self.is_recording
+        if was:
             self.stop()
 
         p = self.params
+
+        # Acquisition mode first
         try:
-            # 0) kill autos first
-            for feat, val in [("GainAuto", "Off"), ("ExposureAuto", "Off")]:
-                try: _set(self.cam_handle, feat, val)
-                except Exception: pass
+            if _has(self.cam_handle, "AcquisitionMode"):
+                self.cam_handle.AcquisitionMode.set(p.get("acquisition_mode", "Continuous"))
+        except Exception:
+            pass
 
-            # 1) if you use continuous free-run, keep Trigger off
+        # Binning (both axes if present)
+        try:
+            b = int(p.get("binning", 1))
+            if _has(self.cam_handle, "BinningHorizontal"):
+                self.cam_handle.BinningHorizontal.set(b)
+            if _has(self.cam_handle, "BinningVertical"):
+                self.cam_handle.BinningVertical.set(b)
+        except Exception:
+            pass
+
+        # Autos OFF if we want manual control
+        ga = _auto_mode(p.get("gain_auto"))
+        ea = _auto_mode(p.get("exposure_auto"))
+        try:
+            if ga and _has(self.cam_handle, "GainAuto"):
+                self.cam_handle.GainAuto.set(ga)
+        except Exception:
+            pass
+        try:
+            if ea and _has(self.cam_handle, "ExposureAuto"):
+                self.cam_handle.ExposureAuto.set(ea)
+        except Exception:
+            pass
+
+        # Manual gain/exposure only when autos Off
+        if (not ga or ga == "Off"):
             try:
-                _set(self.cam_handle, "TriggerSelector", "FrameStart")
-                _set(self.cam_handle, "TriggerMode", "Off")
+                if _has(self.cam_handle, "Gain"):
+                    self.cam_handle.Gain.set(float(p["gain"]))
             except Exception:
                 pass
-
-            # 2) Pixel format before timing stuff
-            try:
-                self.cam_handle.set_pixel_format(PixelFormat.Mono8)
-            except Exception:
-                pass
-
-            # 3) Set ExposureTime (Vimba X uses microseconds)
-            try:
-                self.cam_handle.ExposureTime.set(float(p["exposure"]))
-            except Exception:
-                # fallback to legacy name if your model still uses it
-                try: self.cam_handle.ExposureTimeAbs.set(float(p["exposure"]))
-                except Exception: pass
-
-            # 4) Enable and set AcquisitionFrameRate (new names in Vimba X)
-            try:
-                self.cam_handle.AcquisitionFrameRateEnable.set(True)
-                fr_feat = self.cam_handle.AcquisitionFrameRate
-
-                # clamp to camera range & increment
-                lo, hi = fr_feat.get_range()
-                inc = fr_feat.get_increment()
-                target = float(p["frame_rate"])
-                target = min(max(target, lo), hi)
-                if inc and inc > 0:
-                    target = lo + round((target - lo) / inc) * inc
-                fr_feat.set(target)
-            except Exception:
-                # legacy fallback
+        if (not ea or ea == "Off"):
+            exp_us = float(p["exposure"])
+            ok = False
+            if _has(self.cam_handle, "ExposureTime"):
                 try:
-                    _set(self.cam_handle, "AcquisitionFrameRateAbs", float(p["frame_rate"]))
+                    self.cam_handle.ExposureTime.set(exp_us)  # µs
+                    ok = True
+                except Exception:
+                    pass
+            if not ok and _has(self.cam_handle, "ExposureTimeAbs"):
+                try:
+                    self.cam_handle.ExposureTimeAbs.set(exp_us)  # legacy naming on some models
                 except Exception:
                     pass
 
-            # 5) (Optional) bandwidth cap if you ever drop frames on GigE/USB
-            # try:
-            #     self.cam_handle.DeviceLinkThroughputLimitMode.set('On')
-            #     self.cam_handle.DeviceLinkThroughputLimit.set( ... )  # bytes/sec
-            # except Exception:
-            #     pass
+        # Trigger vs free-run
+        use_trigger = bool(p.get("triggered", False)) or \
+                      str(p.get("trigger_mode", "Off")).strip().lower() == "on"
 
-            # 6) Gain last
+        if use_trigger:
             try:
-                self.cam_handle.Gain.set(p["gain"])
+                if _has(self.cam_handle, "TriggerSelector"):
+                    self.cam_handle.TriggerSelector.set("FrameStart")
+                if _has(self.cam_handle, "TriggerMode"):
+                    self.cam_handle.TriggerMode.set("On")
+                if _has(self.cam_handle, "TriggerSource"):
+                    self.cam_handle.TriggerSource.set(p.get("trigger_source", "Line1"))
+                if _has(self.cam_handle, "TriggerActivation"):
+                    self.cam_handle.TriggerActivation.set(p.get("trigger_activation", "RisingEdge"))
+            except Exception:
+                pass
+            # Disable AFR limiter in trigger mode
+            try:
+                if _has(self.cam_handle, "AcquisitionFrameRateEnable"):
+                    self.cam_handle.AcquisitionFrameRateEnable.set(False)
+            except Exception:
+                pass
+        else:
+            # Free-run: ensure trigger off
+            try:
+                if _has(self.cam_handle, "TriggerMode"):
+                    self.cam_handle.TriggerMode.set("Off")
             except Exception:
                 pass
 
-            # Debug: read back what the camera accepted
+            # Enable AFR and set FPS
+            fps_target = float(p.get("frame_rate", 30.0))
+
+            afr_node = getattr(self.cam_handle, "AcquisitionFrameRate", None)
+            afr_en   = getattr(self.cam_handle, "AcquisitionFrameRateEnable", None)
+
+            # Enable AFR first if available
             try:
-                req = float(p["frame_rate"])
-                got = self.cam_handle.AcquisitionFrameRate.get()
-                display(f"Requested FPS={req:.2f}, camera accepted ≈{got:.2f} fps")
+                if afr_en:
+                    afr_en.set(True)
             except Exception:
                 pass
 
-        except VmbFeatureError as err:
-            display(f"Error applying parameters: {err}", level="warning")
+            # Now set the frame rate (clamped to node range)
+            try:
+                if afr_node:
+                    afr_node.set(_clamp_to_node_range(afr_node, fps_target))
+            except Exception:
+                pass
 
-        if resume_recording:
-            self._record()
+        # ---- Readback / verification (no noise, just the useful bits) ----
+        applied = []
+        def rb(name, fmt=str):
+            try:
+                if _has(self.cam_handle, name):
+                    v = getattr(self.cam_handle, name).get()
+                    applied.append(f"{name}={fmt(v)}")
+                    return v
+            except Exception:
+                pass
+            return None
 
+        tm     = rb("TriggerMode")
+        afr_en = rb("AcquisitionFrameRateEnable")
+        if _has(self.cam_handle, "AcquisitionFrameRate"):
+            try:
+                applied.append(f"AcquisitionFrameRate={self.cam_handle.AcquisitionFrameRate.get():.3f}")
+            except Exception:
+                pass
+        rb("ExposureAuto")
+        rb("GainAuto")
+        rb("ExposureTime", lambda v: f"{float(v):.1f} µs")
+        rb("Gain",         lambda v: f"{float(v):.2f} dB")
 
+        display(f"[AVT {self.cam_id}] Parameters applied → " + (" | ".join(applied) if applied else "n/a"))
 
-    # ------------------------------------------------------------------
-    # acquisition
-    # ------------------------------------------------------------------
-    def _record(self):
-        """Create a blocking generator that yields (shm.name, shape, dtype, meta)."""
+        if was:
+            self._start_stream()
+
+    # ---------- Streaming: yield SHM tuples ----------
+    def _start_stream(self):
         self.is_recording = True
 
         def _gen():
+            prev_shm = None
             while self.is_recording:
                 try:
-                    if self.cam_handle is not None:
-                        frame = self.cam_handle.get_frame(timeout_ms=self.timeout)
-                    else:
-                        display("Camera handle is None in _record().", level="error")
-                        break
+                    f = self.cam_handle.get_frame(timeout_ms=self.timeout)
                 except VmbTimeout:
                     continue
-                if frame is not None:
-                    arr = frame.as_numpy_ndarray()
-                    # Allocate shared memory for the frame
-                    shm = shared_memory.SharedMemory(create=True, size=arr.nbytes)
-                    shm_arr = np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)
-                    shm_arr[:] = arr  # Copy frame data into shared memory
-                    meta = (frame.get_id(), frame.get_timestamp())
-                    # Yield the shared memory name, shape, dtype, and meta
-                    yield (shm.name, arr.shape, str(arr.dtype), meta)
-                else:
-                    yield None, "no frame"
-        self.frame_generator = _gen()
+                if f is None:
+                    continue
 
-    # Helper for consumer to reconstruct frame from shared memory
-    @staticmethod
-    def frame_from_shm(shm_name, shape, dtype):
-        shm = shared_memory.SharedMemory(name=shm_name)
-        arr = np.ndarray(shape, dtype=np.dtype(dtype), buffer=shm.buf)
-        return arr, shm
+                # contiguous copy -> SHM (Windows-safe across processes)
+                arr = f.as_numpy_ndarray()
+                carr = np.ascontiguousarray(arr)
+                shm = shared_memory.SharedMemory(create=True, size=carr.nbytes)
+                np.ndarray(carr.shape, dtype=carr.dtype, buffer=shm.buf)[:] = carr
+                meta = (f.get_id(), f.get_timestamp())
+
+                # close previous producer handle after a full interval
+                if prev_shm is not None:
+                    try:
+                        prev_shm.close()
+                    except Exception:
+                        pass
+                prev_shm = shm
+
+                yield (shm.name, carr.shape, str(carr.dtype)), meta
+
+            if prev_shm is not None:
+                try:
+                    prev_shm.close()
+                except Exception:
+                    pass
+
+        self._gen = _gen()
 
     def stop(self):
         self.is_recording = False
-        display("AVT cam stopped.")
+        self._gen = None
+        display(f"[AVT {self.cam_id}] stream stopped.")
 
-    # ------------------------------------------------------------------
-    # data access
-    # ------------------------------------------------------------------
     def image(self):
-        if not self.is_recording:
-            display("image() called while not recording.", level="warning")
+        if not self.is_recording or self._gen is None:
             return None, "not recording"
-        # Ensure frame_generator is initialized and is a generator
-        if self.frame_generator is None:
-            self._record()
-        if not hasattr(self.frame_generator, '__next__'):
-            display("frame_generator is not a generator object.", level="error")
-            return None, "generator error"
         try:
-            result = next(self.frame_generator)
-            # Handle shared memory tuple
-            if isinstance(result, tuple) and len(result) == 4 and isinstance(result[0], str):
-                shm_name, shape, dtype, meta = result
-                img, shm = self.frame_from_shm(shm_name, shape, dtype)
-                # Optionally, copy to detach from shared memory and clean up
-                img_copy = np.array(img, copy=True)
-                shm.close()
-                shm.unlink()
-                return img_copy, meta
-            else:
-                img, meta = result
-                return img, meta
+            return next(self._gen)
         except StopIteration:
             return None, "stop"
         except Exception as err:
-            display(f"Error fetching image: {err}", level="error")
+            display(f"[AVT {self.cam_id}] image() error: {err}", level="error")
             return None, "error"
 
-    # alias for GenericCam compatibility
     close = stop
 
+    # ---------- Learn format (single direct frame, no SHM) ----------
     def _init_format(self):
-        frame, _ = self.image()
-        # Handle shared memory tuple from AVT
-        if isinstance(frame, tuple) and len(frame) == 3 and isinstance(frame[0], str):
-            shm_name, shape, dtype = frame
-            frame, shm = AVTCam.frame_from_shm(shm_name, shape, dtype)
-            frame = np.array(frame, copy=True)
-            shm.close()
-            shm.unlink()
-        if frame is not None:
-            self.format['height'] = frame.shape[0]
-            self.format['width'] = frame.shape[1]
-            self.format['n_chan'] = frame.shape[2] if frame.ndim == 3 else 1
-            display(f"{self.name} - size: {self.format['height']} x {self.format['width']}")
+        try:
+            f = self.cam_handle.get_frame(timeout_ms=self.timeout)
+        except VmbTimeout:
+            return
+        if f is None:
+            return
+        try:
+            arr = f.as_numpy_ndarray()
+            self.format['height'] = arr.shape[0]
+            self.format['width']  = arr.shape[1]
+            self.format['n_chan'] = arr.shape[2] if arr.ndim == 3 else 1
+            if arr.dtype == np.uint16:
+                self.format['dtype'] = np.uint16
+            display(f"[AVT {self.cam_id}] Ready: {self.format['width']}x{self.format['height']} "
+                    f"n_chan={self.format['n_chan']} dtype={self.format['dtype']}")
+        except Exception:
+            pass

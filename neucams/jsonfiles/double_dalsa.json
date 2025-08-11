@@ -2,8 +2,6 @@
     "cams": [
 		{
             "description": "dalsa1",
-            "type": "genicam",
-            "name": "Nano-M1930(00:01:0D:C6:88:10)",
             "driver": "genicam",
             "serial_number": "H2260407",
             "params": {
@@ -14,30 +12,20 @@
 				"binning": 1,
 				"trigger_mode": "Off",
 				"trigger_source": "Line1"
-            },
-            "recorder_params": {
-                "recorder": "opencv",
-                "folder": "test"
             }
         },
         {
             "description": "dalsa2",
-            "type": "genicam",
-            "name": "Nano-M1930(00:01:0D:C6:88:18)",
             "driver": "genicam",
             "serial_number": "H2260415",
             "params": {
                 "exposure": 1500,
-				"frame_rate": 30,
+				"frame_rate": 10,
 				"gain": 4,
 				"n_frames": 1,
 				"binning": 1,
 				"trigger_mode": "Off",
 				"trigger_source": "Line1"
-            },
-            "recorder_params": {
-                "recorder": "opencv",
-                "folder": "test"
             }
         }
 			
@@ -46,7 +34,7 @@
         "compress": 0,
         "data_folder": "I:\\mouselab\\data",
         "experiment_folder": "EXP_TEST",
-        "recorder": "tiff",
+        "recorder": "opencv",
 		"recorder_sleep_time":0.05
     },
     "server_params": {

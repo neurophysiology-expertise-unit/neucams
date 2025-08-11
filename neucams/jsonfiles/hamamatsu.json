@@ -1,7 +1,7 @@
 {
     "cams": [
         {
-            "description": "Hamamatsu Orca",
+            "description": "Orca",
             "driver": "hamamatsu",
             "serial_number": "003024",
             "params": {
@@ -12,8 +12,8 @@
     "recorder_params": {
         "compress": 0,
         "data_folder": "I:\\mouselab\\data",
-        "experiment_folder": "EXP_TEST",
-        "recorder": "tiff",
+        "experiment_folder": "ly",
+        "recorder": "opencv",
 		"recorder_sleep_time":0.05
     },
     "server_params": {

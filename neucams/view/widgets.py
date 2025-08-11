@@ -132,8 +132,7 @@ class PyCamsWindow(QMainWindow):
         if 'settings_file' in cam_dict.get('params', {}):
             cam_dict['params']['settings_file'] = join(dirname(getcwd()), 'configs',
                                                     cam_dict['params']['settings_file'])
-        writer_dict = {**self.preferences.get('recorder_params', {}),
-                    **cam_dict.get('recorder_params', {})}
+        writer_dict = {**self.preferences.get('recorder_params', {})}
         cam_handler = CameraHandler(cam_dict, writer_dict)
         cam_handler.start()  # <-- start the process
         if cam_handler.camera_connected:

@@ -15,23 +15,6 @@ from multiprocessing import shared_memory
 
 VERSION = 'B0.6'
 
-
-def debug_pickle(obj, prefix=''):
-    import pickle, collections.abc
-    try:
-        pickle.dumps(obj)
-        # print(prefix, '✅ picklable', type(obj))
-    except Exception as e:
-        # print(prefix, '❌ NOT picklable', type(obj), '→', e)
-        if isinstance(obj, (list, tuple, set)):
-            for i, item in enumerate(obj):
-                debug_pickle(item, prefix + f'  [{i}] ')
-        elif isinstance(obj, dict):
-            for k, v in obj.items():
-                debug_pickle(k, prefix + '  {key} ')
-                debug_pickle(obj[k], prefix + f'  {k}: ')
-
-
 def shm_frame(shm_name, shape, dtype):
     shm = shared_memory.SharedMemory(name=shm_name)
     arr = np.ndarray(shape, dtype=np.dtype(dtype), buffer=shm.buf)
@@ -69,6 +52,7 @@ class FileWriter(Process):
         self.inQ = Queue()
 
         self.file_handler = None
+        self.error_count = 0
         self.start()
         self.start_flag.wait() #do not return handle before process started
 
@@ -92,7 +76,7 @@ class FileWriter(Process):
         filepath = self.get_complete_filepath(filepath)
         self.update_filepath_array(filepath)
         self.file_handler = None
-    
+        
     def get_complete_filepath(self, filepath):
         """Adds the extension, checks that the filepath is available.
         If not, checks the next available filepath:
@@ -105,7 +89,7 @@ class FileWriter(Process):
             i += 1
             complete_filepath = f"{filepath}_{i}.{self.extension}"
         return complete_filepath
-                                                                
+                                                                    
     def update_filepath_array(self, filepath):
         for i in range(len(self.filepath_array)):
             self.filepath_array[i] = ' '
@@ -143,7 +127,6 @@ class FileWriter(Process):
             # QUEUE DEBUG
             import numpy as np
             # Remove type/shape debug prints
-            debug_pickle((frame,metadata), 'QUEUE PAYLOAD')
             self.inQ.put((frame,metadata), timeout = self.queue_timeout)
         except queue.Full:
             print("ERROR: could not save image, queue is full")
@@ -153,6 +136,7 @@ class FileWriter(Process):
         self.start_flag.set()
         while not self.close_flag.is_set():
             self.saved_frame_count = 0
+            self.error_count = 0
             while not self.stop_flag.is_set():
                 time.sleep(self.sleeptime)
                 self._process_queue()
@@ -160,9 +144,6 @@ class FileWriter(Process):
     
     def _close_run(self):
         self._release_file_handler()
-        # if not self.saved_frame_count == 0:
-            # display("[Writer] Wrote {0} frames at {1}.".format(self.saved_frame_count,
-                                                               # self.filepath))
         self.stop_flag.clear()
         self.is_run_closed.set()
   
@@ -190,7 +171,10 @@ class FileWriter(Process):
                                                        self.frames_per_file)==0)):
                     self._init_file_handler(frame)
                 frameid, timestamp = metadata[:2]
-                self._write(frame, frameid, timestamp)
+                try:
+                    self._write(frame, frameid, timestamp)
+                except Exception:
+                    self.error_count += 1
                 self.saved_frame_count += 1
             finally:
                 shm.close()
@@ -201,7 +185,10 @@ class FileWriter(Process):
                                                    self.frames_per_file)==0)):
                 self._init_file_handler(frame)
             frameid, timestamp = metadata[:2] 
-            self._write(frame,frameid,timestamp)
+            try:
+                self._write(frame,frameid,timestamp)
+            except Exception:
+                self.error_count += 1
             self.saved_frame_count += 1
                 
     def close(self):
@@ -259,7 +246,11 @@ class BinaryWriter(FileWriter):
         return open(filepath,'wb')
         
     def _write(self,frame,frameid,timestamp):
-        self.file_handler.write(frame)
+        # Ensure bytes are written
+        if isinstance(frame, np.ndarray):
+            self.file_handler.write(frame.tobytes(order='C'))
+        else:
+            self.file_handler.write(frame)
         if np.mod(frameid,5000) == 0: 
             display('Wrote frame id - {0}'.format(frameid))
         
@@ -355,7 +346,7 @@ class OpenCVWriter(FileWriter):
                        fourcc = 'XVID', #'X264'
                        frame_rate = 60,
                        **kwargs):
-        self.frame_rate = frame_rate
+        self.frame_rate = frame_rate if frame_rate and frame_rate > 0 else 20
         cv2.setNumThreads(6)
         self.fourcc = cv2.VideoWriter_fourcc(*fourcc)
         self.w = None
@@ -372,11 +363,34 @@ class OpenCVWriter(FileWriter):
     def _get_file_handler(self,filepath,frame = None):
         self.w = frame.shape[1]
         self.h = frame.shape[0]
-        is_color = frame.shape[2] == 3 if frame.ndim == 3 else False
+        is_color = frame.ndim == 3 and frame.shape[2] == 3
+
+        if not self.frame_rate or self.frame_rate < 1:
+            self.frame_rate = 30
+            
         display('Opening: '+ filepath)
-        return cv2.VideoWriter(filepath, self.fourcc, self.frame_rate,(self.w,self.h), is_color)
+        writer = cv2.VideoWriter(filepath, self.fourcc, self.frame_rate,(self.w,self.h), is_color)
+        if not writer.isOpened():
+            display(f"OpenCV VideoWriter failed to open for {filepath} with fourcc={self.fourcc}. Trying MJPG...", level='warning')
+            # Fallback to MJPG
+            mjpg = cv2.VideoWriter_fourcc(*'MJPG')
+            writer = cv2.VideoWriter(filepath, mjpg, self.frame_rate,(self.w,self.h), is_color)
+            if not writer.isOpened():
+                display(f"OpenCV VideoWriter still failed to open for {filepath}.", level='error')
+        return writer
                                   
     def _write(self,frame,frameid,timestamp):
-        # if frame.ndim < 3 or frame.shape[2] == 1:
-            # frame = cv2.cvtColor(frame,cv2.COLOR_GRAY2RGB)
-        self.file_handler.write(frame)
+        img = frame
+        # Squeeze singleton channel dimension for grayscale
+        if img.ndim == 3 and img.shape[2] == 1:
+            img = img[:, :, 0]
+        # Convert to 8-bit for OpenCV VideoWriter if needed
+        if img.dtype == np.uint16:
+            img = (img >> 8).astype(np.uint8)
+        elif img.dtype == np.float32 or img.dtype == np.float64:
+            img = np.clip(img * 255.0, 0, 255).astype(np.uint8)
+        # Ensure proper shape: 2D for gray, 3D (H,W,3) for color
+        if img.ndim == 3 and img.shape[2] not in (1, 3):
+            # Unknown channel layout; default to grayscale conversion
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR) if img.shape[2] > 1 else img
+        self.file_handler.write(img)

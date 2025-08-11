@@ -34,7 +34,8 @@ class CameraFactory:
         module = import_module(f'neucams.{module_name}')
         cam_class = getattr(module, class_name)
 
-        if driver == 'hamamatsu':
+        # Pass serial_number for drivers that can use it (hamamatsu, avt, genicam passes it as cam_id already)
+        if driver in ('hamamatsu','avt'):
             return cam_class(cam_id=cam_id, params=params, serial_number=serial_number)
         else:
             return cam_class(cam_id=cam_id, params=params)
@@ -83,7 +84,10 @@ class CameraHandler(Process):
         cam.close()
         
         if self.camera_connected:
-            self._init_framebuffer()
+            ok = self._init_framebuffer()
+            if ok:
+                fmt = getattr(self, 'format', {})
+                display(f"[{cam.name} {cam.cam_id}] camera ready: {fmt.get('width')}x{fmt.get('height')} dtype={fmt.get('dtype')} n_chan={fmt.get('n_chan')}")
         
 
     def _init_framebuffer(self):
@@ -127,7 +131,7 @@ class CameraHandler(Process):
                 display("Camera not ready—handler exiting.", level="error")
                 self.handler_closed.set()
                 return   
-              
+        
         self._init_buffer()
         with self._open_cam() as cam:
             self.cam = cam
@@ -146,18 +150,36 @@ class CameraHandler(Process):
                     while not self.stop_trigger.is_set():
                         self._process_queues()
                         frame, metadata = cam.image()
-                        # Handle shared memory tuple from AVT
+                        # Handle shared memory tuple from AVT with writer-first handoff
+                        handled_shm_in_writer = False
                         if isinstance(frame, tuple) and len(frame) == 3 and isinstance(frame[0], str):
                             shm_name, shape, dtype = frame
-                            frame, shm = self.frame_from_shm(shm_name, shape, dtype)
-                            frame = np.array(frame, copy=True)
-                            shm.close()
-                            shm.unlink()
-                        # Remove type/shape debug prints
-                        if frame is not None:
+                            # 1) If recording, hand the SHM tuple to the writer FIRST (writer will manage unlink)
                             if self.saving.is_set():
+                                writer.save((shm_name, shape, dtype), metadata)
+                                handled_shm_in_writer = True
+                            # 2) For display, copy from SHM into our shared framebuffer
+                            from neucams.file_writer import shm_frame as _shm_frame
+                            arr, shm = _shm_frame(shm_name, shape, dtype)
+                            try:
+                                frame_np = np.array(arr, copy=True)
+                            finally:
+                                shm.close()
+                                # Only unlink here if we did NOT give it to writer
+                                if not handled_shm_in_writer:
+                                    import contextlib
+                                    with contextlib.suppress(FileNotFoundError):
+                                        from multiprocessing import shared_memory as _shm
+                                        _shm.SharedMemory(name=shm_name).unlink()
+
+                            # Now proceed with local numpy frame
+                            frame = frame_np
+
+                        # Non-SHM or post-copy handling
+                        if frame is not None:
+                            if self.saving.is_set() and not handled_shm_in_writer:
                                 writer.save(frame, metadata)
-                            self._update(frame,metadata)
+                            self._update(frame, metadata)
                         elif metadata == "stop":
                             self.stop_trigger.set()
                     display(f'[{cam.name} {cam.cam_id}] stop trigger set.')
@@ -170,13 +192,22 @@ class CameraHandler(Process):
         writer_cls = writers[writer_type]
         std_keys = ['frames_per_file']
         cfg = {key: self.writer_dict[key] for key in self.writer_dict if key in std_keys}
-        folder = join(self.writer_dict['data_folder'], self.cam_dict['description'], self.writer_dict['experiment_folder'])
+        # Build folder as: data_folder/experiment_folder/<camera_description>
+        folder = join(self.writer_dict['data_folder'], self.writer_dict['experiment_folder'], self.cam_dict['description'])
         self.set_folder_path(folder)
         cfg['filepath'] = self.get_new_filepath()
 
         import inspect
-        if 'frame_rate' in inspect.signature(writer_cls).parameters:
+        sig = inspect.signature(writer_cls)
+        # Pass camera-derived frame rate if the writer supports it
+        if 'frame_rate' in sig.parameters:
             cfg['frame_rate'] = self.cam.params.get('frame_rate', None)
+        # Map 'compress' -> 'compression' if writer supports 'compression'
+        if 'compression' in sig.parameters:
+            if 'compress' in self.writer_dict:
+                cfg['compression'] = self.writer_dict.get('compress')
+            elif 'compression' in self.writer_dict:
+                cfg['compression'] = self.writer_dict.get('compression')
 
         return writer_cls(**cfg)
 
@@ -218,6 +249,9 @@ class CameraHandler(Process):
 
         if cam_type == 'hamamatsu':
             cam_id = None  # resolve by serial in the driver
+        elif cam_type == 'avt':
+            # Let the AVT driver resolve by serial itself to avoid extra vmbpy startups here
+            cam_id = cam_dict_copy.get('id', None)
         else:
             cam_id = (resolve_cam_id_by_serial(cam_type, serial_number)
                     if serial_number is not None else cam_dict_copy.get('id', None))

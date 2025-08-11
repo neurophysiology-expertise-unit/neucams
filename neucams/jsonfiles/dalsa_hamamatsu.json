@@ -1,7 +1,7 @@
 {
     "cams": [
         {
-            "description": "Hamamatsu Orca",
+            "description": "Orca",
             "driver": "hamamatsu",
             "serial_number": "003024",
             "params": {
