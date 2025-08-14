@@ -1,7 +1,7 @@
 import sys
 from argparse import ArgumentParser
 from PyQt5.QtWidgets import QApplication
-from neucams.view.widgets import PyCamsWindow
+from neucams.view.widgets import NeuCamsWindow
 from neucams.view.launcher import SplashWindow
 from neucams.utils import get_preferences, display
 
@@ -17,7 +17,7 @@ def main():
         ret, prefs = get_preferences(args.pref)
         if not ret:
             display('Warning: could not load preferences')
-        w = PyCamsWindow(preferences = prefs)
+        w = NeuCamsWindow(preferences = prefs)
         w.show()
     else:
         splash = SplashWindow()

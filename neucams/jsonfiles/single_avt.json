@@ -1,37 +1,21 @@
 {
     "cams": [
-        {
-            "description": "MakoAVT",
-            "type": "avt",
-            "name": "MakoAVT",
-            "driver": "avt",
-            "serial_number": "50-0537068788",
-            "params": {
-                "exposure": 1500,
-                "frame_rate": 10,
-                "gain": 4,
-                "n_frames": 1,
-                "binning": 1,
-                "trigger_mode": "Off",
-                "trigger_source": "Line1"
-            },
-            "recorder_params": {
-                "recorder": "opencv",
-                "folder": "test"
-            }
+      {
+        "description": "MakoAVT",
+        "driver": "avt",
+        "serial_number": "50-0537068788",
+        "params": {
+          "require_full_access": true,
+          "exposure_auto": "Off", 
+          "exposure": 50,
+          "gain_auto": "On",
+          "binning": 1,
+          "trigger_mode": "Off",
+          "verbose": true
         }
+      }
     ],
-    "recorder_params": {
-        "compress": 0,
-        "data_folder": "I:\\mouselab\\data",
-        "experiment_folder": "EXP_TEST",
-        "recorder": "tiff",
-        "recorder_sleep_time":0.05
-    },
-    "server_params": {
-        "server": "udp",
-        "server_ip": "10.86.1.239",
-        "server_port": 33330,
-        "server_refresh_time": 30
-    }
-} 
+    "recorder_params": { "compress": 0, "data_folder": "I:\\mouselab\\data",
+      "experiment_folder": "test23", "recorder": "tiff", "recorder_sleep_time": 0.05 }
+  }
+  

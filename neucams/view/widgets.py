@@ -38,7 +38,7 @@ def frame_from_shm(shm_name, shape, dtype):
 # -----------------------------------------------------------------------------
 
 dirpath = dirname(__file__)
-legacy_icon_path = join(dirname(dirpath), 'view', 'icon', 'pycams.png')
+legacy_icon_path = join(dirname(dirpath), 'view', 'icon', 'NeuCams.png')
 
 # -----------------------------------------------------------------------------
 # Logging Handler for GUI
@@ -53,7 +53,7 @@ class QtLogHandler(logging.Handler):
         msg = self.format(record)
         self.parent.log_message.emit(msg)
 
-class PyCamsWindow(QMainWindow):
+class NeuCamsWindow(QMainWindow):
     """Next-gen wrapper that loads the *new* main-window .ui while keeping the
     proven backend logic from the legacy GUI.
     """
@@ -67,7 +67,7 @@ class PyCamsWindow(QMainWindow):
         super().__init__()
 
         # Load the *new* Qt Designer layout
-        uic.loadUi(join(dirpath, 'UI_pycams.ui'), self)
+        uic.loadUi(join(dirpath, 'UI_NeuCams.ui'), self)
 
         # --- Logging Setup ---
         # self.log_message.connect(self.log_textEdit.append)
@@ -92,6 +92,7 @@ class PyCamsWindow(QMainWindow):
             for cam, cam_handler in preinit_cam_handlers:
                 cam_handler.start()
                 widget = CamWidget(cam_handler)
+                widget.is_triggered = self._compute_is_triggered(cam)
                 self.cam_widgets.append(widget)
                 self._add_widget(cam.get('description'), widget)
         else:
@@ -107,7 +108,7 @@ class PyCamsWindow(QMainWindow):
         # ------------------------------------------------------------------
         server_params = self.preferences.get('server_params', None)
         if (server_params is not None and
-                not hasattr(PyCamsWindow, '_udp_server_created')):
+                not hasattr(NeuCamsWindow, '_udp_server_created')):
             server_type = server_params.get('server', None)
             if server_type == 'udp':
                 self.server = UDPSocket((server_params.get('server_ip', '0.0.0.0'),
@@ -115,7 +116,7 @@ class PyCamsWindow(QMainWindow):
                 self._timer = QTimer(self)
                 self._timer.timeout.connect(self._process_server_messages)
                 self._timer.start(server_params.get('server_refresh_time', 100))
-                PyCamsWindow._udp_server_created = True
+                NeuCamsWindow._udp_server_created = True
 
         # Misc UI initialisation
         self.mdiArea.setActivationOrder(1)
@@ -128,6 +129,12 @@ class PyCamsWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     # widgets.py
+
+    def _compute_is_triggered(self, cam_dict):
+        p = (cam_dict or {}).get('params', {}) or {}
+        trig_mode = str(p.get('TriggerMode', p.get('trigger_mode', 'off'))).lower()
+        return bool(p.get('triggered', False)) or trig_mode == 'on'
+
     def _setup_camera(self, cam_dict):
         if 'settings_file' in cam_dict.get('params', {}):
             cam_dict['params']['settings_file'] = join(dirname(getcwd()), 'configs',
@@ -137,6 +144,7 @@ class PyCamsWindow(QMainWindow):
         cam_handler.start()  # <-- start the process
         if cam_handler.camera_connected:
             widget = CamWidget(cam_handler)
+            widget.is_triggered = self._compute_is_triggered(cam_dict)
             self.cam_widgets.append(widget)
             self._add_widget(cam_dict.get('description', 'Camera'), widget)  # pass widget
         else:
@@ -246,7 +254,7 @@ class PyCamsWindow(QMainWindow):
         for cam_widget in self.cam_widgets:
             cam_widget.cam_handler.close()
         time.sleep(0.5)
-        display("PyCams out, bye!")
+        display("NeuCams out, bye!")
         QApplication.quit()
         sys.exit()
 
@@ -254,6 +262,7 @@ class CamWidget(BaseCameraWidget):
     def __init__(self, cam_handler=None):
         super().__init__(cam_handler)
         uic.loadUi(join(dirpath, 'UI_cam.ui'), self)
+        self.is_triggered = False
 
         # --- Initialize state ---
         self.original_img = None
@@ -261,7 +270,7 @@ class CamWidget(BaseCameraWidget):
         self.frame_nr = 0
         self._prev_time = time.time()
         self._prev_frame_nr = 0
-        self._fps_deque = deque(maxlen=5)
+        self._fps_deque = deque(maxlen=10)
 
         # --- Connections ---
         self.start_stop_pushButton.clicked.connect(self._start_stop_toggled)

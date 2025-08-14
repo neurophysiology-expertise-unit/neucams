@@ -152,6 +152,25 @@ class GenICam(GenericCam):
         self.params = {**default_params, **self.params}
         default_format = {'dtype': np.uint8}
         self.format = {**default_format, **self.format}
+        self._normalize_trigger_params()
+
+    def _normalize_trigger_params(self):
+        """Coalesce lower/upper case keys from JSON to the GenICam names we set."""
+        p = self.params or {}
+        def coalesce(*keys, default=None):
+            for k in keys:
+                if k in p:
+                    return p[k]
+            return default
+        trig_mode = coalesce('TriggerMode', 'trigger_mode', default='Off')
+        trig_src  = coalesce('TriggerSource', 'trigger_source', default='Line1')
+        trig_act  = coalesce('TriggerActivation', 'trigger_activation', default='RisingEdge')
+        # normalize into canonical keys used by apply_params()
+        self.params['TriggerMode'] = trig_mode
+        self.params['TriggerSource'] = trig_src
+        self.params['TriggerActivation'] = trig_act
+        # convenience: 'triggered' true if TriggerMode is On
+        self.params['triggered'] = bool(p.get('triggered', False)) or str(trig_mode).lower() == 'on'
 
     # ------------------------------------------------------------------
     def is_connected(self):
@@ -233,16 +252,9 @@ class GenICam(GenericCam):
             except Exception:
                 pass
 
-        # ----- extra: allow ExposureMode override from JSON -----
-        try:
-            if hasattr(self.features, 'ExposureMode'):
-                self.features.ExposureMode.value = self.params.get('ExposureMode', 'Timed')
-        except Exception:
-            pass
-
         # ----- extra: map trigger-related keys from JSON -----
-        use_trigger = self.params.get('triggered', False) or \
-                      (self.params.get('TriggerMode', 'Off') != 'Off')
+        use_trigger = bool(self.params.get('triggered', False)) or \
+                      (str(self.params.get('TriggerMode', 'Off')).lower() != 'off')
         if use_trigger:
             # Some GenICam stacks require TriggerSelector first
             for k, v in {

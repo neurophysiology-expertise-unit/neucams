@@ -1,7 +1,7 @@
 import os
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, QMessageBox, QProgressBar
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from neucams.view.widgets import PyCamsWindow
+from neucams.view.widgets import NeuCamsWindow
 from neucams.utils import get_preferences, display, check_preferences, resolve_cam_id_by_serial
 from neucams.camera_handler import CameraHandler, CameraFactory
 from pathlib import Path
@@ -9,8 +9,6 @@ import logging
 import platform
 # Set global logging to INFO so neucams info messages show
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-# Suppress info messages from vmbpy
-logging.getLogger('vmbpy').setLevel(logging.WARNING)
 
 # Remove global LAST_CONFIG_PATH
 # neucams_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -181,7 +179,7 @@ class SplashWindow(QWidget):
         if config_path:
             save_last_config(config_path)
         self.update_last_config_label()
-        self.main_window = PyCamsWindow(preferences=prefs, preinit_cam_handlers=cam_handlers)
+        self.main_window = NeuCamsWindow(preferences=prefs, preinit_cam_handlers=cam_handlers)
         self.main_window.show()
         self.hide()
         self.stop_loading() 

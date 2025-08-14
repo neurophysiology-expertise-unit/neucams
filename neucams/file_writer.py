@@ -3,7 +3,7 @@ import time
 import sys
 import os
 from os.path import join, isfile, dirname
-from multiprocessing import Process,Queue,Event,Array,Value
+from multiprocessing import Process, Queue, Event, Array, Value
 import queue
 from datetime import datetime
 import numpy as np
@@ -38,9 +38,10 @@ class FileWriter(Process):
         super().__init__()
         self.filepath_array = Array('u',' ' * 1024)
         self.filepath = filepath
+        # NEW: remember the base filepath (without the _i suffix). Used for rollover.
+        self.base_filepath = filepath
         
         self.extension = extension
-        
         self.frames_per_file = frames_per_file
 
         self.start_flag = Event()
@@ -73,6 +74,8 @@ class FileWriter(Process):
             self.stop_flag.set()
             self.is_run_closed.wait()
             self.is_run_closed.clear()
+        # Keep base for subsequent rollovers
+        self.base_filepath = filepath
         filepath = self.get_complete_filepath(filepath)
         self.update_filepath_array(filepath)
         self.file_handler = None
@@ -98,6 +101,15 @@ class FileWriter(Process):
 
     def _init_file_handler(self, frame):
         """open file generic"""
+        # Decide path: first open uses current path; rollover picks a fresh one
+        if (self.frames_per_file > 0 and
+            getattr(self, 'saved_frame_count', 0) > 0 and
+            (self.saved_frame_count % self.frames_per_file) == 0):
+            # Rollover: pick next available based on the original base filepath
+            new_path = self.get_complete_filepath(self.base_filepath)
+            self.update_filepath_array(new_path)
+
+        # Use whatever is currently in the shared array as the target path
         self.filepath = self.get_filepath()
         folder = dirname(self.filepath)
         if not os.path.exists(folder):
@@ -106,7 +118,7 @@ class FileWriter(Process):
             except Exception as e:
                 print(f"Could not create folder {folder} : {e}")
         self._release_file_handler()
-        self.file_handler = self._get_file_handler(self.filepath,frame)
+        self.file_handler = self._get_file_handler(self.filepath, frame)
         
     def _get_file_handler(self, filepath, frame):
         """get specific file handler"""
