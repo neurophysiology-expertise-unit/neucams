@@ -270,7 +270,7 @@ class CamWidget(BaseCameraWidget):
         self.frame_nr = 0
         self._prev_time = time.time()
         self._prev_frame_nr = 0
-        self._fps_deque = deque(maxlen=10)
+        self._fps_deque = deque(maxlen=5)
 
         # --- Connections ---
         self.start_stop_pushButton.clicked.connect(self._start_stop_toggled)

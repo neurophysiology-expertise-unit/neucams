@@ -6,6 +6,7 @@ BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 
 GENTL_DIR = BASE / "gentl"          # your MatrixVision/etc bundle
 AVT_DIR   = BASE / "vmbpy"          # your AVT bundle
+DCAM_DIR  = BASE / "dcam"           # your Hamamatsu DCAM runtime bundle
 
 def _prepend(env: str, p: Path):
     pstr = str(p)
@@ -20,9 +21,10 @@ _prepend("GENICAM_GENTL64_PATH", GENTL_DIR)
 # PATH for Windows DLL resolver
 _prepend("PATH", GENTL_DIR)
 _prepend("PATH", AVT_DIR)
+_prepend("PATH", DCAM_DIR)
 
 # Python 3.8+ DLL dir hint (Windows only)
 if hasattr(os, "add_dll_directory"):
-    for p in (GENTL_DIR, AVT_DIR):
+    for p in (GENTL_DIR, AVT_DIR, DCAM_DIR):
         if p.exists():
             os.add_dll_directory(str(p))

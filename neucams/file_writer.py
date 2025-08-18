@@ -2,7 +2,7 @@
 import time
 import sys
 import os
-from os.path import join, isfile, dirname
+from os.path import join, isfile, dirname, splitext
 from multiprocessing import Process, Queue, Event, Array, Value
 import queue
 from datetime import datetime
@@ -19,6 +19,19 @@ def shm_frame(shm_name, shape, dtype):
     shm = shared_memory.SharedMemory(name=shm_name)
     arr = np.ndarray(shape, dtype=np.dtype(dtype), buffer=shm.buf)
     return arr, shm
+
+def _attach_shm_with_retry(shm_name, shape, dtype, retries=3, delay=0.002):
+    """Attach to an existing SharedMemory by name with a couple of short retries."""
+    for i in range(retries):
+        try:
+            shm = shared_memory.SharedMemory(name=shm_name)
+            arr = np.ndarray(shape, dtype=np.dtype(dtype), buffer=shm.buf)
+            return arr, shm
+        except FileNotFoundError:
+            if i == retries - 1:
+                raise
+            time.sleep(delay)
+
 
 
 class FileWriter(Process):
@@ -53,6 +66,10 @@ class FileWriter(Process):
         self.inQ = Queue()
 
         self.file_handler = None
+        # NEW: sidecar timestamp log for each data file
+        self.ts_file_handler = None
+        self.file_frame_index = 0  # 0..(frames_per_file-1) within current file
+
         self.error_count = 0
         self.start()
         self.start_flag.wait() #do not return handle before process started
@@ -92,12 +109,49 @@ class FileWriter(Process):
             i += 1
             complete_filepath = f"{filepath}_{i}.{self.extension}"
         return complete_filepath
-                                                                    
+                                                                        
     def update_filepath_array(self, filepath):
         for i in range(len(self.filepath_array)):
             self.filepath_array[i] = ' '
         for i in range(len(filepath)):
             self.filepath_array[i] = filepath[i]
+
+    # --- Timestamp sidecar helpers ---
+    def _open_ts_log(self):
+        """Open the sidecar .txt next to current self.filepath and reset per-file index."""
+        try:
+            ts_path = splitext(self.filepath)[0] + '.txt'
+            # Ensure folder exists (created in _init_file_handler)
+            self.ts_file_handler = open(ts_path, 'w', encoding='utf-8')
+            # simple header for readability (doesn't break parsing)
+            self.ts_file_handler.write('# frame_index\ttimestamp\n')
+            self.ts_file_handler.flush()
+        except Exception as e:
+            display(f"Failed to open timestamp log for {self.filepath}: {e}", level='warning')
+            self.ts_file_handler = None
+        self.file_frame_index = 0
+
+    def _release_ts_log(self):
+        if self.ts_file_handler is not None:
+            try:
+                self.ts_file_handler.flush()
+                self.ts_file_handler.close()
+            except Exception:
+                pass
+            finally:
+                self.ts_file_handler = None
+
+    def _log_timestamp(self, timestamp):
+        if self.ts_file_handler is not None:
+            try:
+                ts = float(timestamp)
+                self.ts_file_handler.write(f"{self.file_frame_index}\t{ts:.4f}\n")
+                if (self.file_frame_index & 63) == 0:
+                    self.ts_file_handler.flush()
+            except Exception as e:
+                display(f"Failed writing timestamp for {self.filepath}: {e}", level='warning')
+        self.file_frame_index += 1
+
 
     def _init_file_handler(self, frame):
         """open file generic"""
@@ -117,18 +171,36 @@ class FileWriter(Process):
                 os.makedirs(folder)
             except Exception as e:
                 print(f"Could not create folder {folder} : {e}")
+        # Close any previous handlers
         self._release_file_handler()
+        self._release_ts_log()
+        # Open new handlers
         self.file_handler = self._get_file_handler(self.filepath, frame)
+        self._open_ts_log()
         
     def _get_file_handler(self, filepath, frame):
         """get specific file handler"""
         pass
         
     def _release_file_handler(self):
-        """close specific file handler"""
+        """close specific file handler (and sidecar log)"""
         if self.file_handler is not None:
-            self.file_handler.close()
-            self.file_handler = None
+            try:
+                self.file_handler.close()
+            except Exception:
+                pass
+            finally:
+                self.file_handler = None
+        # also close sidecar here for subclasses that don't override and call super
+        self._release_ts_log()
+
+    def _clear_queue(self):
+        try:
+            while True:
+                self.inQ.get_nowait()
+        except queue.Empty:
+            pass
+    
 
     def _write(self,frame,frameid,timestamp):
         """write specific"""
@@ -156,6 +228,7 @@ class FileWriter(Process):
     
     def _close_run(self):
         self._release_file_handler()
+        self._clear_queue()
         self.stop_flag.clear()
         self.is_run_closed.set()
   
@@ -176,21 +249,28 @@ class FileWriter(Process):
         # Handle shared memory tuple from AVT
         if isinstance(frame, tuple) and len(frame) == 3 and isinstance(frame[0], str):
             shm_name, shape, dtype = frame
-            frame, shm = shm_frame(shm_name, shape, dtype)
+            try:
+                frame, shm = _attach_shm_with_retry(shm_name, shape, dtype)
+            except FileNotFoundError:
+                self.error_count += 1
+                return
             try:
                 if (self.file_handler is None or
                     (self.frames_per_file > 0 and np.mod(self.saved_frame_count,
-                                                       self.frames_per_file)==0)):
+                                                    self.frames_per_file)==0)):
                     self._init_file_handler(frame)
                 frameid, timestamp = metadata[:2]
                 try:
                     self._write(frame, frameid, timestamp)
+                    # NEW: log per-frame timestamp to sidecar
+                    self._log_timestamp(timestamp)
                 except Exception:
                     self.error_count += 1
                 self.saved_frame_count += 1
             finally:
                 shm.close()
                 shm.unlink()
+
         else:
             if (self.file_handler is None or
                 (self.frames_per_file > 0 and np.mod(self.saved_frame_count,
@@ -199,6 +279,8 @@ class FileWriter(Process):
             frameid, timestamp = metadata[:2] 
             try:
                 self._write(frame,frameid,timestamp)
+                # NEW: log per-frame timestamp to sidecar
+                self._log_timestamp(timestamp)
             except Exception:
                 self.error_count += 1
             self.saved_frame_count += 1
@@ -371,6 +453,8 @@ class OpenCVWriter(FileWriter):
         if not self.file_handler is None:
             self.file_handler.release()
             self.file_handler = None
+        # ensure sidecar log is also closed in this subclass override
+        self._release_ts_log()
 
     def _get_file_handler(self,filepath,frame = None):
         self.w = frame.shape[1]

@@ -1,26 +1,24 @@
 {
     "cams": [
-        {
-            "description": "Orca",
-            "driver": "hamamatsu",
-            "serial_number": "003024",
-            "params": {
-				"binning": 1
-            }
-        }		
+      {
+        "description": "Orca",
+        "driver": "hamamatsu",
+        "serial_number": "003024",
+        "params": {
+          "frame_rate": 30,
+          "trigger_source": "INTERNAL",
+          "exposure": 20000.0,
+          "binning": 1,
+          "verbose": true
+        }
+      }
     ],
     "recorder_params": {
-        "compress": 0,
-        "data_folder": "I:\\mouselab\\data",
-        "experiment_folder": "ly",
-        "recorder": "opencv",
-		"recorder_sleep_time":0.05
-    },
-    "server_params": {
-        "server": "udp",
-		"server_ip": "10.86.1.239",
-        "server_port": 33330,
-        "server_refresh_time": 30
+      "compress": 0,
+      "data_folder": "I:\\mouselab\\data",
+      "experiment_folder": "kek",
+      "recorder": "tiff",
+      "recorder_sleep_time": 0.05
     }
-	
-}
+  }
+  
