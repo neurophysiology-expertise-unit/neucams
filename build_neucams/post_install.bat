@@ -1,87 +1,38 @@
 @echo off
-setlocal EnableDelayedExpansion
+setlocal EnableExtensions
 
-echo === NeuCams post_install ===
+rem ---- PREFIX from Constructor; fallback if run by hand ----
+if not defined PREFIX set "PREFIX=%~dp0"
 
+rem ---- PowerShell path (simple) ----
+set "PS=%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%PS%" set "PS=powershell.exe"
+set "PSFLAGS=-NoLogo -NoProfile -ExecutionPolicy Bypass"
 
-if not defined PREFIX set "PREFIX=%~dp0.."
-
-
-set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
-"%PS%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%PREFIX%\create_shortcuts.ps1"
-if errorlevel 1 echo [WARN] create_shortcuts.ps1 returned errorlevel %errorlevel%
-
-
+rem ---- 1) Unpack PyInstaller bundle (ignore errors) ----
 if exist "%PREFIX%\payload.zip" (
-    echo Extracting payload.zip …
-    "%PS%" -NoLogo -NoProfile -Command ^
-        "Expand-Archive -LiteralPath '%PREFIX%\payload.zip' -DestinationPath '%PREFIX%' -Force"
-    del "%PREFIX%\payload.zip" >nul 2>&1
+  "%PS%" %PSFLAGS% -Command ^
+    "Expand-Archive -LiteralPath '%PREFIX%\payload.zip' -DestinationPath '%PREFIX%' -Force" ^
+    >nul 2>&1
 )
 
-
-set "GVAR=GENICAM_GENTL64_PATH"
-for /f "tokens=2,*" %%A in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v %GVAR% 2^>nul') do set "GENTL=%%B"
-if not defined GENTL set "GENTL=%GENICAM_GENTL64_PATH%"
-
-set "MV_DIR=%MVIMPACT_ACQUIRE_DIR%"
-set "AV_DIR=%VIMBAX_HOME%"
-
-echo %GVAR%   : %GENTL%
-echo MVIMPACT : %MV_DIR%
-echo VIMBAX   : %AV_DIR%
-echo.
-
-set FOUND_MV=0
-set FOUND_AV=0
-
-if defined GENTL (
-    for %%P in (!GENTL:;= !) do (
-        if exist "%%~P\mvGenTL_Acquire*.cti" set FOUND_MV=1
-        if exist "%%~P\VimbaX*.cti"          set FOUND_AV=1
-    )
+rem ---- 2) Create shortcuts (ignore errors) ----
+if exist "%PREFIX%\create_shortcuts.ps1" (
+  "%PS%" %PSFLAGS% -File "%PREFIX%\create_shortcuts.ps1" -Prefix "%PREFIX%" >nul 2>&1
 )
 
+rem ---- 3) Prepend our GenTL path (user-scope only; no admin) ----
 set "MYGENTL=%PREFIX%\gentl"
 if exist "%MYGENTL%" (
-    if !FOUND_MV! == 0 if exist "%MYGENTL%\mvGenTL_Acquire*.cti" set FOUND_MV=1
-    if !FOUND_AV! == 0 if exist "%MYGENTL%\VimbaX*.cti"          set FOUND_AV=1
-
-    echo !GENTL! | find /i "%MYGENTL%" >nul
-    if errorlevel 1 (
-        if defined GENTL (
-            set "NEWGENTL=%MYGENTL%;!GENTL!"
-        ) else (
-            set "NEWGENTL=%MYGENTL%"
-        )
-        echo Adding %MYGENTL% to %GVAR% (machine scope) …
-        setx %GVAR% "!NEWGENTL!" /M >nul 2>&1
-        if errorlevel 1 echo [WARN] Could not set machine wide %GVAR% (non_admin install).
-        set "GENTL=!NEWGENTL!"
+  echo %GENICAM_GENTL64_PATH% | find /i "%MYGENTL%" >nul || (
+    if defined GENICAM_GENTL64_PATH (
+      set "NEWG=%MYGENTL%;%GENICAM_GENTL64_PATH%"
+    ) else (
+      set "NEWG=%MYGENTL%"
     )
+    setx GENICAM_GENTL64_PATH "%NEWG%" >nul 2>&1
+  )
 )
 
-echo.
-if !FOUND_MV! == 1 (
-    echo [OK] mvIMPACT GenTL found.
-) else (
-    echo [WARN] mvIMPACT GenTL not found. Install/repair mvIMPACT Acquire.
-)
-
-if !FOUND_AV! == 1 (
-    echo [OK] Allied Vision GenTL found.
-) else (
-    echo [WARN] Vimba X GenTL not found. Install/repair Vimba X.
-)
-
-if not defined MV_DIR echo [WARN] MVIMPACT_ACQUIRE_DIR not set (drivers/tools may be missing).
-if not defined AV_DIR echo [WARN] VIMBAX_HOME not set (SDK path missing).
-
-echo.
-echo === Post_install done ===
-
-:: ------------------------------------------------------------------
-:: Reset ERRORLEVEL so Constructor sees success
-:: ------------------------------------------------------------------
-cmd /c exit 0
-endlocal & exit /b 0
+rem ---- Always succeed so Constructor doesn't bail ----
+exit /b 0

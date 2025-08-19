@@ -47,14 +47,26 @@ function New-Shortcut {
 
 # ── Create Start Menu shortcut ────────────────────────────────
 $newStartMenuLnk = Join-Path $groupDir 'NeuCams.lnk'
-New-Shortcut -LinkPath $newStartMenuLnk `
-            -TargetPath $targetExe `
-            -WorkingDirectory $workingDir `
-            -IconLocation $iconSource
+if (Test-Path $iconSource) {
+    New-Shortcut -LinkPath $newStartMenuLnk `
+                 -TargetPath $targetExe `
+                 -WorkingDirectory $workingDir `
+                 -IconLocation $iconSource
+} else {
+    New-Shortcut -LinkPath $newStartMenuLnk `
+                 -TargetPath $targetExe `
+                 -WorkingDirectory $workingDir
+}
 
 # ── (Optional) Desktop shortcut ───────────────────────────────
 $newDesktopLnk = Join-Path $desktopDir 'NeuCams.lnk'
-New-Shortcut -LinkPath $newDesktopLnk `
-            -TargetPath $targetExe `
-            -WorkingDirectory $workingDir `
-            -IconLocation $iconSource
+if (Test-Path $iconSource) {
+    New-Shortcut -LinkPath $newDesktopLnk `
+                 -TargetPath $targetExe `
+                 -WorkingDirectory $workingDir `
+                 -IconLocation $iconSource
+} else {
+    New-Shortcut -LinkPath $newDesktopLnk `
+                 -TargetPath $targetExe `
+                 -WorkingDirectory $workingDir
+}
