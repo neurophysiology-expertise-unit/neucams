@@ -5,13 +5,8 @@
         "driver": "avt",
         "serial_number": "50-0537068788",
         "params": {
-          "AcquisitionFrameRateAbs": 60,
-          "require_full_access": true,
-          "exposure_auto": "Off", 
-          "exposure": 12500,
-          "gain_auto": "On",
-          "binning": 1,
-          "trigger_mode": "Off",
+          "frame_rate": 90.0,
+          "exposure": 3000,
           "verbose": true
         }
       }

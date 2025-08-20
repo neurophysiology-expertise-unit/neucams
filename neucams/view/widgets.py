@@ -252,7 +252,17 @@ class NeuCamsWindow(QMainWindow):
 
     def close(self):
         for cam_widget in self.cam_widgets:
-            cam_widget.cam_handler.close()
+            h = cam_widget.cam_handler
+            try:
+                h.close()
+                h.join(timeout=2.0)
+                if h.is_alive():
+                    try:
+                        h.terminate()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         time.sleep(0.5)
         display("NeuCams out, bye!")
         QApplication.quit()

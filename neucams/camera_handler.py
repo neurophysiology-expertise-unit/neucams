@@ -4,7 +4,7 @@ import numpy as np
 import ctypes
 import time
 import datetime
-from os.path import dirname, join
+from os.path import dirname, join, isdir, expanduser
 import json
 from neucams.file_writer import BinaryWriter, TiffWriter, FFMPEGWriter, OpenCVWriter
 from neucams.utils import display, resolve_cam_id_by_serial
@@ -190,10 +190,20 @@ class CameraHandler(Process):
         writer_type = self.writer_dict.get('recorder', 'opencv')
         writers = {'opencv': OpenCVWriter, 'binary': BinaryWriter, 'tiff': TiffWriter, 'ffmpeg': FFMPEGWriter}
         writer_cls = writers[writer_type]
-        std_keys = ['frames_per_file']
-        cfg = {key: self.writer_dict[key] for key in self.writer_dict if key in std_keys}
+        # Only consider frames_per_file when using TIFF. Support keys: tiff_size
+        cfg = {}
+        if writer_type == 'tiff':
+            tiff_fpf = (self.writer_dict.get('tiff_size'))
+            if isinstance(tiff_fpf, int) and tiff_fpf > 0:
+                cfg['frames_per_file'] = tiff_fpf
         # Build folder as: data_folder/experiment_folder/<camera_description>
-        folder = join(self.writer_dict['data_folder'], self.writer_dict['experiment_folder'], self.cam_dict['description'])
+        data_folder = self.writer_dict.get('data_folder', None)
+        if not data_folder or not isdir(data_folder):
+            fallback = join(expanduser('~'), 'data')
+            if data_folder:
+                display(f"Configured data_folder '{data_folder}' not found. Falling back to '{fallback}'.", level='warning')
+            data_folder = fallback
+        folder = join(data_folder, self.writer_dict.get('experiment_folder', ''), self.cam_dict['description'])
         self.set_folder_path(folder)
         cfg['filepath'] = self.get_new_filepath()
 
@@ -415,4 +425,12 @@ class CameraHandler(Process):
     def close(self):
         self.close_event.set()
         self.stop_acquisition()
-        self.handler_closed.wait()
+        # Only wait if the process was started
+        if self.is_alive():
+            self.handler_closed.wait(timeout=2.0)
+            # If still alive, terminate forcefully
+            if self.is_alive():
+                try:
+                    self.terminate()
+                except Exception:
+                    pass
