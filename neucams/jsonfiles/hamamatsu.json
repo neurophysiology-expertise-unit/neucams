@@ -5,12 +5,10 @@
         "driver": "hamamatsu",
         "serial_number": "003024",
         "params": {
-          "frame_rate": 50,
-          "trigger_mode": "Off",
+          "frame_rate": 30,
           "trigger_source": "INTERNAL",
-          "exposure_auto": "Off",
-          "exposure": 5000,
-          "binning": 2,
+          "exposure": 20000.0,
+          "binning": 1,
           "verbose": true
         }
       }

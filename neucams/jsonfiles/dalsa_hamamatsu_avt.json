@@ -43,8 +43,13 @@
             "driver": "avt",
             "serial_number": "50-0537068788",
             "params": {
-                "AcquisitionFrameRateAbs": 90,
-                "exposure": 3000,
+                "AcquisitionFrameRateAbs": 30,
+                "require_full_access": true,
+                "exposure_auto": "Off", 
+                "exposure": 12000,
+                "gain_auto": "On",
+                "binning": 1,
+                "trigger_mode": "Off",
                 "verbose": true
               }
         }
@@ -52,10 +57,9 @@
     ],
     "recorder_params": {
         "compress": 0,
-        "data_folder": "halalaluya",
+        "data_folder": "I:\\mouselab\\data",
         "experiment_folder": "expall",
         "recorder": "tiff",
-        "tiff_size": 60,
 		"recorder_sleep_time":0.05
     },
     "server_params": {

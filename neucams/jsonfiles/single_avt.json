@@ -5,8 +5,13 @@
         "driver": "avt",
         "serial_number": "50-0537068788",
         "params": {
-          "frame_rate": 90.0,
-          "exposure": 3000,
+          "frame_rate": 60,
+          "require_full_access": true,
+          "exposure_auto": "Off", 
+          "exposure": 1000,
+          "gain_auto": "Off",
+          "binning": 1,
+          "trigger_mode": "Off",
           "verbose": true
         }
       }

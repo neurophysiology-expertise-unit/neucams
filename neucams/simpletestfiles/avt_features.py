@@ -198,14 +198,29 @@ def dump_features(container: FeatContainer, title: str, names_only: bool = False
                 "enum_choices": choices,
             })
 
+def _next_index_for_id(safe_id: str, directory: str = ".") -> int:
+    base = f"avt_features_{safe_id}_"
+    max_idx = 0
+    try:
+        for name in os.listdir(directory):
+            if not name.startswith(base):
+                continue
+            rest = name[len(base):]
+            num_str = rest.split(".", 1)[0]
+            if num_str.isdigit():
+                max_idx = max(max_idx, int(num_str))
+    except Exception:
+        pass
+    return max_idx + 1
+
 def _default_prefix(cam) -> str:
     try:
         cid = cam.get_id()
     except Exception:
         cid = "camera"
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_id = str(cid).replace(os.sep, "_").replace(":", "_")
-    return f"avt_features_{safe_id}_{ts}_5"
+    next_idx = _next_index_for_id(safe_id)
+    return f"avt_features_{safe_id}_{next_idx}"
 
 def _export_xml(rows: List[Dict[str, Any]], path: str):
     root = Element("features")
@@ -287,7 +302,8 @@ def main():
         prefix = args.out_prefix or _default_prefix(cam)
         if rows:
             if not args.no_xml:
-                _export_xml(rows, f"{prefix}.xml")
+                # _export_xml(rows, f"{prefix}.xml")
+                pass
             if not args.no_xlsx:
                 try:
                     _export_xlsx_or_csv(rows, f"{prefix}.xlsx")

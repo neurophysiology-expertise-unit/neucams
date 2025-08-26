@@ -7,6 +7,7 @@ from neucams.camera_handler import CameraHandler, CameraFactory
 from pathlib import Path
 import logging
 import platform
+import sys
 # Set global logging to INFO so neucams info messages show
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -14,7 +15,40 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # neucams_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 PROJECT_ROOT = str(Path(__file__).parent.parent.parent)
-CONFIG_DIR = os.path.join(PROJECT_ROOT, 'neucams', 'jsonfiles')
+
+def get_installed_config_dir():
+    """Get the jsonfiles directory from the installed location"""
+    # Check if we're running from an installed location
+    if getattr(sys, 'frozen', False):
+        # Running from PyInstaller bundle
+        base_path = os.path.dirname(sys.executable)
+        installed_config = os.path.join(base_path, 'jsonfiles')
+        if os.path.isdir(installed_config):
+            return installed_config
+    
+    # Check if we're running from source and jsonfiles exists
+    source_config = os.path.join(PROJECT_ROOT, 'neucams', 'jsonfiles')
+    if os.path.isdir(source_config):
+        return source_config
+    
+    return None
+
+def get_default_config_dir():
+    """Get the default directory for config files"""
+    # First try installed location
+    installed_dir = get_installed_config_dir()
+    if installed_dir:
+        return installed_dir
+    
+    # Fallback to user's Desktop
+    desktop = os.path.expanduser("~/Desktop")
+    if os.path.isdir(desktop):
+        return desktop
+    
+    # Final fallback to current working directory
+    return os.getcwd()
+
+CONFIG_DIR = get_installed_config_dir() or get_default_config_dir()
 
 def get_user_config_dir():
     if platform.system() == "Windows":
@@ -33,11 +67,11 @@ def get_last_config_path():
     return os.path.join(USER_CONFIG_DIR, '.last_config.txt')
 
 def save_last_config(path):
-    rel_path = os.path.relpath(path, PROJECT_ROOT)
+    # Save absolute path instead of relative
     last_config_path = get_last_config_path()
     try:
         with open(last_config_path, 'w') as f:
-            f.write(rel_path)
+            f.write(path)
     except Exception as e:
         display(f'Could not save last config: {e}', level='warning')
 
@@ -46,9 +80,9 @@ def load_last_config():
     try:
         if os.path.isfile(last_config_path):
             with open(last_config_path, 'r') as f:
-                rel_path = f.read().strip()
-                abs_path = os.path.abspath(os.path.join(PROJECT_ROOT, rel_path))
-                return abs_path
+                path = f.read().strip()
+                if os.path.isfile(path):
+                    return path
     except Exception as e:
         display(f'Could not load last config: {e}', level='warning')
     return None
@@ -118,23 +152,27 @@ class SplashWindow(QWidget):
         self.setLayout(layout)
         self.worker_thread = None
         self.main_window = None
-        # Track the last config directory (default to jsonfiles)
-        self.last_config_dir = CONFIG_DIR
+        # Track the last config directory (default to installed jsonfiles or fallback)
+        self.last_config_dir = get_default_config_dir()
         self.update_last_config_label()
 
     def update_last_config_label(self):
         last = load_last_config()
         if last and os.path.isfile(last):
-            rel = os.path.relpath(last, PROJECT_ROOT)
-            self.last_config_label.setText(f'Last config: {rel}')
+            # Show a user-friendly path
+            if get_installed_config_dir() and last.startswith(get_installed_config_dir()):
+                rel_path = os.path.relpath(last, get_installed_config_dir())
+                self.last_config_label.setText(f'Last config: {rel_path}')
+            else:
+                # Show just the filename for non-installed paths
+                filename = os.path.basename(last)
+                self.last_config_label.setText(f'Last config: {filename}')
         else:
             self.last_config_label.setText('No last config found.')
 
     def choose_config(self):
-        # Use user's Desktop as default, or fallback to CONFIG_DIR
-        default_dir = os.path.expanduser("~/Desktop")
-        if not os.path.isdir(default_dir):
-            default_dir = CONFIG_DIR
+        # Use installed jsonfiles directory as default, then fallback to user's Desktop
+        default_dir = get_default_config_dir()
         fname, _ = QFileDialog.getOpenFileName(self, 'Select configuration file', default_dir, 'JSON Files (*.json)')
         if fname:
             self.start_loading()

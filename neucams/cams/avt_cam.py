@@ -1,25 +1,14 @@
-# neucams/cams/avt_cam.py (vmbpy 1.1.1) — AVT driver with deterministic FPS and canonical snake_case params
-import os, sys, ctypes, traceback
+import os, sys, ctypes
 from pathlib import Path
 import numpy as np
 from multiprocessing import shared_memory
 
 BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 AVT_DIR = BASE / "vmbpy"
-PLUGS   = AVT_DIR / "plugins"
-
-def _add_dir(p: Path):
-    if p.exists():
-        os.environ["PATH"] = str(p) + os.pathsep + os.environ.get("PATH", "")
-        if hasattr(os, "add_dll_directory"):
-            os.add_dll_directory(str(p))
-        # print(f"[AVT][bootstrap] Added to PATH: {p}")
-
-# If you bundle vmbpy/VmbC alongside the app, uncomment these:
-# _add_dir(AVT_DIR); _add_dir(PLUGS)
 
 def _env_verbose() -> bool:
-    return str(os.environ.get("NEUCAMS_VERBOSE", "")).strip().lower() in ("1","true","yes","on")
+    val = os.environ.get("NEUCAMS_VERBOSE", "")
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 # Best-effort preload (quiet unless env verbose)
 if (AVT_DIR / "VmbC.dll").exists():
@@ -39,7 +28,7 @@ def _has(cam, feat: str) -> bool:
     return hasattr(cam, feat)
 
 def _auto_mode(val):
-    # accept: True/False or "off"/"once"/"continuous"
+    # normalize to GenICam enums: Off | Once | Continuous
     if isinstance(val, bool):
         return "Continuous" if val else "Off"
     if isinstance(val, (int, float)):
@@ -47,7 +36,7 @@ def _auto_mode(val):
     if isinstance(val, str):
         s = val.strip().lower()
         if s in ("off", "false", "0"): return "Off"
-        if s in ("once",):             return "Once"
+        if s in ("once",): return "Once"
         if s in ("on", "true", "1", "continuous"): return "Continuous"
     return None
 
@@ -79,11 +68,23 @@ def _safe_set(node, feat_name, value, clamp=False, vprint=lambda *_: None):
             after = node.get()
         except Exception:
             pass
-        vprint(f"[AVT][set] {feat_name}: before={before} requested={value} now={after}")
+        vprint(f"[AVT][set] {feat_name}: before={before} desired={value} applied={after}")
         return after
     except Exception as e:
-        vprint(f"[AVT][set:EXC] {feat_name}: requested={value} error={e}")
+        vprint(f"[AVT][set:EXC] {feat_name}: desired={value} error={e}")
         return None
+
+def _first_present(d: dict, names, default=None):
+    # case-insensitive read with alias list (e.g. ["exposure_auto", "ExposureAuto"])
+    for n in names:
+        if n in d:
+            return d[n]
+    low = {k.lower(): v for k, v in d.items()}
+    for n in names:
+        ln = n.lower()
+        if ln in low:
+            return low[ln]
+    return default
 
 # ----------------- camera -----------------
 class AVTCam(GenericCam):
@@ -93,30 +94,38 @@ class AVTCam(GenericCam):
         self.serial_number = serial_number
         self._read_only = False
 
-        # Canonical snake_case params only
         defaults = {
+            # imaging
             "pixel_format": "Mono8",
-            "exposure": 10000.0,            # microseconds
-            "exposure_auto": "Off",       # "Off"|"Once"|"Continuous" or True/False
-            "gain": 0.0,
-            "gain_auto": "Off",
+            "exposure": 148.0,              # microseconds (used only if exposure_auto is Off)
+            "exposure_auto": "Off",         # Off|Once|Continuous  (also accept 'ExposureAuto')
+            "gain": 0.0,                    # dB
+            "gain_auto": "Off",             # Off|Once|Continuous  (also accept 'GainAuto')
             "binning": 1,
             "reverse_x": False,
             "reverse_y": False,
+            # acquisition
             "acquisition_mode": "Continuous",
-            "n_frames": 1,
-            "frame_rate": None,           # Hz; if None, leave as-is
-            "trigger_mode": "Off",        # "On"/"Off"
+            "n_frames": 1,                  # used for MultiFrame
+            # free-run fps
+            "frame_rate": 30.0,             # target FPS in free-run -> AcquisitionFrameRateAbs
+            # trigger
+            "triggered": False,
+            "trigger_mode": "Off",
             "trigger_source": "Line1",
             "trigger_activation": "RisingEdge",
             "trigger_delay_us": None,
-            "stream_constrain": True,     # bool
-            "stream_bps": None,           # override bps if you insist
-            "packet_size": None,
+            # GigE transport (optional)
+            "stream_constrain": None,       # bool
+            "stream_bps": None,             # int bytes/sec
+            "packet_size": None,            # int (e.g., 8228 or 1500)
+            # behavior
             "require_full_access": False,
+            # logging (per-camera; no launcher import needed)
             "verbose": None,
         }
         fmt = {"dtype": np.uint8}
+
         merged_params = {**defaults, **(params or {})}
         super().__init__(
             name="AVT",
@@ -125,12 +134,32 @@ class AVTCam(GenericCam):
             format={**fmt, **(format or {})},
         )
 
+        # Exposed params (used by UI/handler in your app)
         self.exposed_params = [
-            "pixel_format","frame_rate","exposure","exposure_auto","gain","gain_auto","binning",
-            "reverse_x","reverse_y","trigger_mode","trigger_source","trigger_activation","trigger_delay_us",
-            "acquisition_mode","n_frames","stream_constrain","stream_bps","packet_size","require_full_access","verbose",
+            "pixel_format",
+            "frame_rate",
+            "exposure",
+            "exposure_auto",
+            "gain",
+            "gain_auto",
+            "binning",
+            "reverse_x",
+            "reverse_y",
+            "triggered",
+            "trigger_mode",
+            "trigger_source",
+            "trigger_activation",
+            "trigger_delay_us",
+            "acquisition_mode",
+            "n_frames",
+            "stream_constrain",
+            "stream_bps",
+            "packet_size",
+            "require_full_access",
+            "verbose",
         ]
 
+        # resolve verbosity: env overrides per-camera param; no external import
         pverb = self.params.get("verbose", None)
         self._verbose = True if _env_verbose() else (bool(pverb) if pverb is not None else False)
         self._v = (lambda msg: print(msg)) if self._verbose else (lambda *_: None)
@@ -140,6 +169,7 @@ class AVTCam(GenericCam):
         self._gen = None
         self.is_recording = False
 
+    # ---------- API used by CameraHandler ----------
     def set_param(self, key, value):
         self._v(f"[AVT][set_param] {key} := {value}")
         self.params[key] = value
@@ -164,7 +194,7 @@ class AVTCam(GenericCam):
         self.vimba = VmbSystem.get_instance()
         self.vimba.__enter__()
 
-        # Resolve serial -> id
+        # Resolve serial -> id *after* Vimba is up
         if not self.cam_id and self.serial_number:
             for c in self.vimba.get_all_cameras():
                 try:
@@ -234,10 +264,6 @@ class AVTCam(GenericCam):
             self._log_resulting_fps(self.cam_handle)
         except Exception:
             pass
-        try:
-            self._log_rate_limits_and_measured()
-        except Exception:
-            pass
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -260,110 +286,40 @@ class AVTCam(GenericCam):
                 self._v(f"[AVT {self.cam_id}] Vimba system closed")
         return False
 
-    # --- FPS: deterministic, bandwidth-locked --------------------------------
-    def _set_fps_locked(self, cam, fps: float):
-        """Compute required link budget, disable constrain, set bps, then set frame rate."""
-        # image payload
-        try:
-            img_size = cam.get_feature_by_name("ImageSize").get()
-        except Exception:
-            img_size = None
-
-        # 1) disable constrain if present
-        try:
-            if hasattr(cam, "StreamFrameRateConstrain"):
-                _safe_set(getattr(cam, "StreamFrameRateConstrain"), "StreamFrameRateConstrain", False, vprint=self._v)
-        except Exception as e:
-            self._v(f"[AVT][fps] StreamFrameRateConstrain set error: {e}")
-
-        # 2) set bps with headroom (unless user forced stream_bps)
-        if self.params.get("stream_bps") is not None:
-            want_bps = int(self.params["stream_bps"])
-        else:
-            if img_size is None:
-                want_bps = None
-            else:
-                want_bps = int(img_size * float(fps) * 1.25)  # ~25% headroom
-
-        if want_bps is not None:
-            try:
-                if hasattr(cam, "StreamBytesPerSecond"):
-                    _safe_set(getattr(cam, "StreamBytesPerSecond"), "StreamBytesPerSecond", int(want_bps), clamp=True, vprint=self._v)
-            except Exception as e:
-                self._v(f"[AVT][fps] StreamBytesPerSecond set error: {e}")
-
-        # 3) finally set AcquisitionFrameRateAbs
+    # --- FPS: set/read AcquisitionFrameRateAbs only ----------------------
+    def _set_fps_abs(self, cam, fps: float):
+        """Set AcquisitionFrameRateAbs only."""
         try:
             feat = cam.get_feature_by_name("AcquisitionFrameRateAbs")
         except Exception:
             self._v("[AVT][fps] AcquisitionFrameRateAbs not present on this camera.")
-            return
+            return None, None
         if not feat.is_writeable():
             self._v("[AVT][fps] AcquisitionFrameRateAbs is not writeable.")
-            return
-
+            return None, None
         try:
-            # clamp via node range
             try:
                 lo, hi = feat.get_range()[:2]
                 target = max(lo, min(float(fps), hi))
             except Exception:
                 target = float(fps)
-            before = None
-            try:
-                before = feat.get()
-            except Exception:
-                pass
             feat.set(target)
-            after = None
-            try:
-                after = feat.get()
-            except Exception:
-                pass
-            self._v(f"[AVT][fps] AcquisitionFrameRateAbs: before={before} requested={fps} now={after}")
+            self._v(f"[AVT][fps] Requested={fps} -> applied {target} via AcquisitionFrameRateAbs")
+            return "AcquisitionFrameRateAbs", target
         except Exception as e:
             self._v(f"[AVT][fps:EXC] Could not set fps: {e}")
+            return None, None
 
     def _log_resulting_fps(self, cam):
+        """Read back AcquisitionFrameRateAbs only."""
         try:
             val = cam.get_feature_by_name("AcquisitionFrameRateAbs").get()
             self._v(f"[AVT {getattr(cam, 'get_id', lambda:'?')()}] AcquisitionFrameRateAbs = {val}")
+            return "AcquisitionFrameRateAbs", val
         except Exception:
             self._v("[AVT] Could not read back AcquisitionFrameRateAbs")
-
-    def _log_rate_limits_and_measured(self):
-        cam = self.cam_handle
-
-        # Sensor/processing ceiling (read-only info node)
-        try:
-            afr_lim = cam.get_feature_by_name("AcquisitionFrameRateLimit").get()
-        except Exception:
-            afr_lim = None
-
-        # Link-derived ceiling (rough): max_bps / (payload * overhead)
-        try:
-            img_size = cam.get_feature_by_name("ImageSize").get()  # bytes/frame
-        except Exception:
-            img_size = None
-        try:
-            bps_hi = cam.StreamBytesPerSecond.get_range()[1] if hasattr(cam, "StreamBytesPerSecond") else None
-        except Exception:
-            bps_hi = None
-
-        link_ceiling = (bps_hi / (img_size * 1.25)) if (img_size and bps_hi and bps_hi > 0) else None
-
-        # The rate you asked for (if present)
-        try:
-            afr = cam.get_feature_by_name("AcquisitionFrameRateAbs").get()
-        except Exception:
-            afr = None
-
-        msg = "[AVT][rate]"
-        msg += f" AFRLimit={afr_lim:.2f} Hz" if afr_lim is not None else " AFRLimit=?"
-        msg += f" | AFRAbs={afr:.2f} Hz"     if afr is not None else ""
-        if link_ceiling is not None:
-            msg += f" | LinkCeiling≈{link_ceiling:.2f} Hz (bps_max={bps_hi}, img={img_size})"
-        self._v(msg)
+            return None, None
+    # --------------------------------------------------------------------
 
     # ---------- Params ----------
     def apply_params(self):
@@ -373,7 +329,7 @@ class AVTCam(GenericCam):
             raise RuntimeError("apply_params() before camera open")
 
         p = self.params
-        P = {k.lower(): v for k, v in p.items()}  # enforce lc only
+        P = {k.lower(): v for k, v in p.items()}  # case-insensitive
 
         def node(name):
             if not _has(self.cam_handle, name):
@@ -387,9 +343,9 @@ class AVTCam(GenericCam):
                 return None
             return _safe_set(node(name), name, value, clamp=clamp, vprint=self._v)
 
-        # ---- Autos first (snake_case only) ----
-        ga = _auto_mode(P.get("gain_auto"))
-        ea = _auto_mode(P.get("exposure_auto"))
+        # ---- Exposure & Gain autos first ----
+        ga = _auto_mode(_first_present(p, ["gain_auto", "GainAuto"]))
+        ea = _auto_mode(_first_present(p, ["exposure_auto", "ExposureAuto"]))
         if ga is not None and _has(self.cam_handle, "GainAuto"):
             apply("GainAuto", ga)
         if ea is not None and _has(self.cam_handle, "ExposureAuto"):
@@ -429,7 +385,7 @@ class AVTCam(GenericCam):
             apply("ReverseY", bool(P.get("reverse_y", False)))
 
         # Trigger vs free-run
-        use_trigger = str(P.get("trigger_mode", "Off")).strip().lower() == "on"
+        use_trigger = bool(P.get("triggered", False)) or str(P.get("trigger_mode", "Off")).strip().lower() == "on"
         if _has(self.cam_handle, "TriggerSelector"):
             apply("TriggerSelector", "FrameStart")
         if use_trigger:
@@ -443,12 +399,11 @@ class AVTCam(GenericCam):
         else:
             if _has(self.cam_handle, "TriggerMode"):
                 apply("TriggerMode", "Off")
-            # Deterministic FPS here
-            fps_target = P.get("frame_rate")
-            if fps_target is not None:
-                self._set_fps_locked(self.cam_handle, float(fps_target))
+            # Set FPS here (Abs only)
+            fps_target = float(P.get("frame_rate", 30.0))
+            self._set_fps_abs(self.cam_handle, fps_target)
 
-        # GigE transport (optional overrides)
+        # GigE transport (optional)
         if p.get("stream_constrain") is not None and _has(self.cam_handle, "StreamFrameRateConstrain"):
             apply("StreamFrameRateConstrain", bool(p["stream_constrain"]))
         if p.get("stream_bps") is not None and _has(self.cam_handle, "StreamBytesPerSecond"):
@@ -478,17 +433,21 @@ class AVTCam(GenericCam):
                 shm = shared_memory.SharedMemory(create=True, size=carr.nbytes)
                 np.ndarray(carr.shape, dtype=carr.dtype, buffer=shm.buf)[:] = carr
                 meta = (f.get_id(), f.get_timestamp())
-                if self._verbose and (n < 1 or (n % 100 == 0)):
+                if self._verbose and (n < 3 or (n % 100 == 0)):
                     print(f"[AVT {self.cam_id}] frame#{n} id={meta[0]} ts={meta[1]} shape={carr.shape} dtype={carr.dtype}")
                 if prev_shm is not None:
-                    try: prev_shm.close()
-                    except Exception: pass
+                    try:
+                        prev_shm.close()
+                    except Exception:
+                        pass
                 prev_shm = shm
                 n += 1
                 yield (shm.name, carr.shape, str(carr.dtype)), meta
             if prev_shm is not None:
-                try: prev_shm.close()
-                except Exception: pass
+                try:
+                    prev_shm.close()
+                except Exception:
+                    pass
 
         self._gen = _gen()
 
@@ -510,7 +469,7 @@ class AVTCam(GenericCam):
 
     close = stop
 
-    # ---------- Learn format ----------
+    # ---------- Learn format (single direct frame, no SHM) ----------
     def _init_format(self):
         try:
             f = self.cam_handle.get_frame(timeout_ms=self.timeout)
@@ -527,6 +486,9 @@ class AVTCam(GenericCam):
             self.format['n_chan'] = arr.shape[2] if arr.ndim == 3 else 1
             if arr.dtype == np.uint16:
                 self.format['dtype'] = np.uint16
-            self._v(f"[AVT {self.cam_id}] Ready: {self.format['width']}x{self.format['height']} n_chan={self.format['n_chan']} dtype={self.format['dtype']}")
+            self._v(
+                f"[AVT {self.cam_id}] Ready: {self.format['width']}x{self.format['height']} "
+                f"n_chan={self.format['n_chan']} dtype={self.format['dtype']}"
+            )
         except Exception as e:
             self._v(f"[AVT {self.cam_id}] _init_format error: {e}")

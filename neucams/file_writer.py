@@ -69,9 +69,6 @@ class FileWriter(Process):
         # NEW: sidecar timestamp log for each data file
         self.ts_file_handler = None
         self.file_frame_index = 0  # 0..(frames_per_file-1) within current file
-        # Per-file timestamp scaling to seconds and base reference
-        self._ts_scale_to_seconds = None
-        self._ts_base_seconds = None
 
         self.error_count = 0
         self.start()
@@ -127,14 +124,12 @@ class FileWriter(Process):
             # Ensure folder exists (created in _init_file_handler)
             self.ts_file_handler = open(ts_path, 'w', encoding='utf-8')
             # simple header for readability (doesn't break parsing)
-            self.ts_file_handler.write('# frame_index\ttimestamp_s\n')
+            self.ts_file_handler.write('# frame_index\ttimestamp\n')
             self.ts_file_handler.flush()
         except Exception as e:
             display(f"Failed to open timestamp log for {self.filepath}: {e}", level='warning')
             self.ts_file_handler = None
         self.file_frame_index = 0
-        self._ts_scale_to_seconds = None
-        self._ts_base_seconds = None
 
     def _release_ts_log(self):
         if self.ts_file_handler is not None:
@@ -150,23 +145,7 @@ class FileWriter(Process):
         if self.ts_file_handler is not None:
             try:
                 ts = float(timestamp)
-                # Detect and cache the scale to seconds on first write
-                if self._ts_scale_to_seconds is None:
-                    if ts > 1e14:       # nanoseconds
-                        self._ts_scale_to_seconds = 1e-9
-                    elif ts > 1e11:     # microseconds
-                        self._ts_scale_to_seconds = 1e-6
-                    elif ts > 1e9:      # seconds since epoch
-                        self._ts_scale_to_seconds = 1.0
-                    else:
-                        # seconds relative to start (common) or milliseconds
-                        # If ts looks like seconds (<1e6), keep seconds; else assume ms
-                        self._ts_scale_to_seconds = 1.0 if ts < 1e6 else 1e-3
-                ts_s = ts * self._ts_scale_to_seconds
-                if self._ts_base_seconds is None:
-                    self._ts_base_seconds = ts_s
-                rel_s = ts_s - self._ts_base_seconds
-                self.ts_file_handler.write(f"{self.file_frame_index}\t{rel_s:.4f}\n")
+                self.ts_file_handler.write(f"{self.file_frame_index}\t{ts:.4f}\n")
                 if (self.file_frame_index & 63) == 0:
                     self.ts_file_handler.flush()
             except Exception as e:
