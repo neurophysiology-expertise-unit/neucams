@@ -56,6 +56,11 @@ class GenericCam:
     def get_features(self):
         """returns features as formatted string"""
         pass
+
+    def is_triggered(self) -> bool:
+        # best-effort default
+        v = str(self.params.get("trigger_mode", "off")).lower()
+        return v == "on"
         
     def _record(self):
         '''start camera acq'''

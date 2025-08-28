@@ -6,7 +6,7 @@
             "serial_number": "003024",
             "params": {
               "frame_rate": 30,
-              "trigger_source": "INTERNAL",
+              "trigger_source": "Off",
               "exposure": 20000.0,
               "binning": 1,
               "verbose": true
@@ -44,10 +44,8 @@
             "serial_number": "50-0537068788",
             "params": {
                 "AcquisitionFrameRateAbs": 30,
-                "require_full_access": true,
                 "exposure_auto": "Off", 
-                "exposure": 12000,
-                "gain_auto": "On",
+                "exposure": 2000,
                 "binning": 1,
                 "trigger_mode": "Off",
                 "verbose": true
@@ -58,9 +56,10 @@
     "recorder_params": {
         "compress": 0,
         "data_folder": "I:\\mouselab\\data",
-        "experiment_folder": "expall",
+        "experiment_folder": "sonsonson",
         "recorder": "tiff",
-		"recorder_sleep_time":0.05
+		"recorder_sleep_time":0.05,
+        "tiff_size": 128
     },
     "server_params": {
         "server": "udp",

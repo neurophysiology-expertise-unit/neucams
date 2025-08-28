@@ -89,9 +89,14 @@ class CameraHandler(Process):
                 fmt = getattr(self, 'format', {})
                 display(f"[{cam.name} {cam.cam_id}] camera ready: {fmt.get('width')}x{fmt.get('height')} dtype={fmt.get('dtype')} n_chan={fmt.get('n_chan')}")
         
+    def _open_cam_for_format(self):
+        cam = self._open_cam()
+        # tell the driver we're only peeking for format (no stream, no full apply)
+        setattr(cam, "_open_for_format", True)
+        return cam
 
     def _init_framebuffer(self):
-        with self._open_cam() as cam:
+        with self._open_cam_for_format() as cam:
             dtype  = cam.format.get('dtype', None)
             height = cam.format.get('height', None)
             width  = cam.format.get('width', None)
@@ -284,6 +289,13 @@ class CameraHandler(Process):
         self.camera_ready.set()
     
     def close_run(self):
+        # Ensure device acquisition really stops between runs
+        try:
+            if hasattr(self, "cam") and self.cam:
+                self.cam.stop()
+        except Exception:
+            pass
+
         self.start_trigger.clear()
         self.is_acquisition_done.set()
         if self.saving.is_set():
@@ -291,6 +303,7 @@ class CameraHandler(Process):
         if not self.close_event.is_set():
             self.stop_trigger.clear()
         self.is_running.clear()
+
 
     def _update(self, frame, metadata):
         self._update_buffer(frame)
@@ -302,14 +315,27 @@ class CameraHandler(Process):
     
     def _update_buffer(self,frame):
         self.img[:] = np.reshape(frame,self.img.shape)[:]
-        
+            
     def wait_for_trigger(self):
         while not self.start_trigger.is_set() and not self.stop_trigger.is_set():
             self._process_queues()
-            time.sleep(0.001) # limits resolution to 1 ms
-        self.cam.apply_params()
+            time.sleep(0.001)
         self.is_running.set()
+
+        # >>> START ACQUISITION FOR DRIVERS THAT SUPPORT IT (GenICam) <<<
+        try:
+            if hasattr(self.cam, "start") and callable(self.cam.start):
+                self.cam.start()
+        except Exception:
+            pass
+        # <<< END ADD >>>
+
+        mode_triggered = getattr(self.cam, "is_triggered", lambda: False)()
+        src = str(getattr(self.cam, "params", {}).get("trigger_source", "")).lower()
+        if mode_triggered and src == "software" and hasattr(self.cam, "fire_software_trigger"):
+            self.cam.fire_software_trigger()
         self.camera_ready.clear()
+
 
     def load_cam_settings(self, fpath):
         """Loads camera settings from a JSON file."""

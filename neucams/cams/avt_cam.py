@@ -2,6 +2,7 @@ import os, sys, ctypes
 from pathlib import Path
 import numpy as np
 from multiprocessing import shared_memory
+import contextlib
 
 BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 AVT_DIR = BASE / "vmbpy"
@@ -93,6 +94,8 @@ class AVTCam(GenericCam):
     def __init__(self, cam_id=None, params=None, format=None, serial_number=None):
         self.serial_number = serial_number
         self._read_only = False
+        self._triggered = False
+        self._open_for_format = False  # default
 
         defaults = {
             # imaging
@@ -169,6 +172,22 @@ class AVTCam(GenericCam):
         self._gen = None
         self.is_recording = False
 
+    def _apply_format_only(self):
+        # Pixel format influences dtype; binning influences w/h.
+        pf = self.params.get("pixel_format", "Mono8")
+        try:
+            enum = getattr(PixelFormat, pf) if isinstance(pf, str) else pf
+            self.cam_handle.set_pixel_format(enum)
+        except Exception:
+            pass
+        # Binning H/V if present
+        if hasattr(self.cam_handle, "BinningHorizontal"):
+            try: self.cam_handle.BinningHorizontal.set(int(self.params.get("binning", 1)))
+            except Exception: pass
+        if hasattr(self.cam_handle, "BinningVertical"):
+            try: self.cam_handle.BinningVertical.set(int(self.params.get("binning", 1)))
+            except Exception: pass
+
     # ---------- API used by CameraHandler ----------
     def set_param(self, key, value):
         self._v(f"[AVT][set_param] {key} := {value}")
@@ -239,6 +258,15 @@ class AVTCam(GenericCam):
             self._read_only = True
             self._v(f"[AVT {self.cam_id}] Opened with access: Read")
 
+        # open camera handle (Full/Read) as you already do
+
+        if getattr(self, "_open_for_format", False):
+            # format-only peek: do NOT start stream, do NOT full apply
+            self._apply_format_only()
+            self._init_format()   # reads Width/Height nodes
+            return self
+
+        # normal run: do not start streaming here
         # Pixel format (best-effort)
         pf = self.params.get("pixel_format", "Mono8")
         enum = getattr(PixelFormat, pf) if isinstance(pf, str) else pf
@@ -258,7 +286,7 @@ class AVTCam(GenericCam):
             self._v(f"[AVT {self.cam_id}] require_full_access=True and access is Read. Not starting stream.")
             return self
 
-        self._start_stream()
+        # DO NOT start streaming here. Just learn format and exit.
         self._init_format()
         try:
             self._log_resulting_fps(self.cam_handle)
@@ -384,10 +412,12 @@ class AVTCam(GenericCam):
         if _has(self.cam_handle, "ReverseY"):
             apply("ReverseY", bool(P.get("reverse_y", False)))
 
-        # Trigger vs free-run
-        use_trigger = bool(P.get("triggered", False)) or str(P.get("trigger_mode", "Off")).strip().lower() == "on"
+        # Trigger vs free-run — single source of truth = trigger_mode
+        use_trigger = (str(P.get("trigger_mode", "Off")).strip().lower() == "on")
+        self._triggered = use_trigger
         if _has(self.cam_handle, "TriggerSelector"):
             apply("TriggerSelector", "FrameStart")
+
         if use_trigger:
             apply("TriggerMode", "On")
             if _has(self.cam_handle, "TriggerSource"):
@@ -410,6 +440,9 @@ class AVTCam(GenericCam):
             apply("StreamBytesPerSecond", int(p["stream_bps"]), clamp=True)
         if p.get("packet_size") is not None and _has(self.cam_handle, "GevSCPSPacketSize"):
             apply("GevSCPSPacketSize", int(p["packet_size"]))
+
+    def is_triggered(self) -> bool:
+        return bool(getattr(self, "_triggered", False))
 
     # ---------- Streaming ----------
     def _start_stream(self):
@@ -445,16 +478,42 @@ class AVTCam(GenericCam):
                 yield (shm.name, carr.shape, str(carr.dtype)), meta
             if prev_shm is not None:
                 try:
+                    name = prev_shm.name
                     prev_shm.close()
+                    # Ensure unlink in case nobody consumed it
+                    from multiprocessing import shared_memory as _shm
+                    with contextlib.suppress(FileNotFoundError):
+                        _shm.SharedMemory(name=name).unlink()
                 except Exception:
                     pass
 
         self._gen = _gen()
 
+    def start(self):
+        """Begin acquisition/generator (idempotent)."""
+        if self.is_recording:
+            return
+        # Prefer explicit AcquisitionStart if available
+        try:
+            if hasattr(self.cam_handle, "AcquisitionStart"):
+                self.cam_handle.AcquisitionStart.run()
+                self._v(f"[AVT {self.cam_id}] AcquisitionStart run")
+        except Exception as e:
+            self._v(f"[AVT {self.cam_id}] AcquisitionStart error: {e}")
+        self._start_stream()
+
     def stop(self):
         self.is_recording = False
         self._gen = None
+        # Politely stop device acquisition if supported
+        try:
+            if hasattr(self.cam_handle, "AcquisitionStop"):
+                self.cam_handle.AcquisitionStop.run()
+                self._v(f"[AVT {self.cam_id}] AcquisitionStop run")
+        except Exception as e:
+            self._v(f"[AVT {self.cam_id}] AcquisitionStop error: {e}")
         self._v(f"[AVT {self.cam_id}] stream stopped.")
+
 
     def image(self):
         if not self.is_recording or self._gen is None:
@@ -471,24 +530,55 @@ class AVTCam(GenericCam):
 
     # ---------- Learn format (single direct frame, no SHM) ----------
     def _init_format(self):
+        # 1) Try node-based dimensions first (works in trigger mode)
         try:
-            f = self.cam_handle.get_frame(timeout_ms=self.timeout)
-        except VmbTimeout:
-            self._v(f"[AVT {self.cam_id}] _init_format timeout")
+            w = getattr(self.cam_handle, "Width").get() if hasattr(self.cam_handle, "Width") else None
+            h = getattr(self.cam_handle, "Height").get() if hasattr(self.cam_handle, "Height") else None
+        except Exception:
+            w = h = None
+
+        if w and h:
+            self.format['width']  = int(w)
+            self.format['height'] = int(h)
+            # dtype from pixel_format param (fast + predictable)
+            pf = str(self.params.get("pixel_format", "Mono8")).lower()
+            self.format['dtype']  = (np.uint16 if ("16" in pf or "12" in pf or "10" in pf) else np.uint8)
+            self.format['n_chan'] = 1
+            self._v(f"[AVT {self.cam_id}] Ready: {self.format['width']}x{self.format['height']} "
+                    f"n_chan={self.format['n_chan']} dtype={self.format['dtype']}")
             return
-        if f is None:
-            self._v(f"[AVT {self.cam_id}] _init_format got None frame")
-            return
+
+        # 2) If not triggered, single frame probe is okay
+        if not self._triggered:
+            try:
+                f = self.cam_handle.get_frame(timeout_ms=self.timeout)
+            except VmbTimeout:
+                self._v(f"[AVT {self.cam_id}] _init_format timeout")
+                return
+            if f is None:
+                self._v(f"[AVT {self.cam_id}] _init_format got None frame")
+                return
+            try:
+                arr = f.as_numpy_ndarray()
+                self.format['height'] = arr.shape[0]
+                self.format['width']  = arr.shape[1]
+                self.format['n_chan'] = arr.shape[2] if arr.ndim == 3 else 1
+                if arr.dtype == np.uint16:
+                    self.format['dtype'] = np.uint16
+                self._v(f"[AVT {self.cam_id}] Ready: {self.format['width']}x{self.format['height']} "
+                        f"n_chan={self.format['n_chan']} dtype={self.format['dtype']}")
+            except Exception as e:
+                self._v(f"[AVT {self.cam_id}] _init_format error: {e}")
+
+    def fire_software_trigger(self):
         try:
-            arr = f.as_numpy_ndarray()
-            self.format['height'] = arr.shape[0]
-            self.format['width'] = arr.shape[1]
-            self.format['n_chan'] = arr.shape[2] if arr.ndim == 3 else 1
-            if arr.dtype == np.uint16:
-                self.format['dtype'] = np.uint16
-            self._v(
-                f"[AVT {self.cam_id}] Ready: {self.format['width']}x{self.format['height']} "
-                f"n_chan={self.format['n_chan']} dtype={self.format['dtype']}"
-            )
+            if hasattr(self.cam_handle, "TriggerSoftware"):
+                self.cam_handle.TriggerSoftware.run()
+                self._v(f"[AVT {self.cam_id}] Software trigger fired successfully")
+                return True
+            else:
+                self._v(f"[AVT {self.cam_id}] No TriggerSoftware feature available")
+                return False
         except Exception as e:
-            self._v(f"[AVT {self.cam_id}] _init_format error: {e}")
+            self._v(f"[AVT {self.cam_id}] Software trigger failed: {e}")
+            return False

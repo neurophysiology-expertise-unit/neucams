@@ -88,6 +88,13 @@ class HamamatsuCam(GenericCam):
             params=merged_params,
             format={**fmt_defaults, **(format or {})},
         )
+        
+        tm = str(merged_params.get("trigger_mode", "")).strip().lower()
+        if "trigger_source" not in merged_params and tm:
+            if tm in ("on", "true", "1"):
+                merged_params["trigger_source"] = "EXTERNAL"
+            elif tm in ("off", "false", "0"):
+                merged_params["trigger_source"] = "INTERNAL"
 
         self.serial_number = serial_number
         self._rt = _DCAMRuntime()
@@ -96,6 +103,7 @@ class HamamatsuCam(GenericCam):
         self._bufs = max(3, int(frame_count))
         self._frame_idx = 0
         self.is_recording = False
+        self._open_for_format = False
 
         self.exposed_params = [
             "exposure",
@@ -150,6 +158,22 @@ class HamamatsuCam(GenericCam):
             f"id={self._cam.dcamdev_getstring(DCAM_IDSTR.DCAM_IDSTR_CAMERAID)}"
         )
 
+        if getattr(self, "_open_for_format", False):
+            # apply only binning + subarray so width/height reflect intended format
+            p = self.params
+            if p.get("binning") is not None:
+                try: self._try_set_prop(DCAMIDPROP.DCAM_IDPROP_BINNING, int(p["binning"]), "Binning")
+                except Exception: pass
+            if bool(p.get("subarray_mode", False)):
+                self._cam.subarray_mode = True
+                if p.get("subarray_size"): self._cam.subarray_size = tuple(map(int, p["subarray_size"]))
+                if p.get("subarray_pos") is not None: self._cam.subarray_pos = tuple(map(int, p["subarray_pos"]))
+            else:
+                self._cam.subarray_mode = False
+            self._query_format()
+            return self
+
+        # normal run: _apply_params_minimal(); alloc buffers; start; etc.
         # Apply parameters BEFORE starting acquisition
         self._apply_params_minimal()
 
@@ -252,6 +276,9 @@ class HamamatsuCam(GenericCam):
             ok = self._try_set_prop(DCAMIDPROP.DCAM_IDPROP_INTERNALFRAMERATE, fps, "InternalFrameRate [Hz]")
             if not ok:
                 self._v("InternalFrameRate is read-only here → using Exposure/ROI to drive effective FPS.")
+
+    def is_triggered(self) -> bool:
+        return str(self.params.get("trigger_source", "INTERNAL")).upper() != "INTERNAL"
 
     def _query_format(self):
         w = int(self._cam.dcamprop_getvalue(DCAMIDPROP.DCAM_IDPROP_IMAGE_WIDTH))

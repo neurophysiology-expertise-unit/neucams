@@ -133,6 +133,7 @@ class GenICam(GenericCam):
         self.h = get_harvester()
         if cam_id is None and self.h.device_info_list:
             cam_id = getattr(self.h.device_info_list[0], "serial_number", None)
+        self._open_for_format = False
 
         super().__init__(name='GenICam', cam_id=cam_id, params=params, format=format)
 
@@ -154,6 +155,39 @@ class GenICam(GenericCam):
         self.format = {**default_format, **self.format}
         self._normalize_trigger_params()
 
+    
+        # add inside class GenICam(GenericCam):
+    def _init_format(self):
+        # Prefer node map values → works even before first frame, including trigger mode
+        try:
+            nm = self.cam_handle.remote_device.node_map
+            w = int(nm.Width.value) if hasattr(nm, "Width") else None
+            h = int(nm.Height.value) if hasattr(nm, "Height") else None
+        except Exception:
+            w = h = None
+
+        if w and h:
+            self.format['width']  = w
+            self.format['height'] = h
+            self.format['n_chan'] = 1
+            self.format['dtype']  = np.uint8
+            display(f"[GenICam {self.cam_id}] Ready: {w}x{h} n_chan=1 dtype=uint8")
+            return
+
+        # Fallback (rare) – only if already free-running
+        try:
+            frame, _ = self.image()
+            if frame is not None and frame.size:
+                self.format['height'] = frame.shape[0]
+                self.format['width']  = frame.shape[1]
+                self.format['n_chan'] = 1 if frame.ndim == 2 else frame.shape[2]
+                self.format['dtype']  = frame.dtype
+                display(f"[GenICam {self.cam_id}] Ready (fetched): {self.format['width']}x{self.format['height']}")
+        except Exception:
+            pass
+
+    
+    
     def _normalize_trigger_params(self):
         """Coalesce lower/upper case keys from JSON to the GenICam names we set."""
         p = self.params or {}
@@ -209,6 +243,18 @@ class GenICam(GenericCam):
         self.cam_handle.__enter__()
         self.cam_handle.num_buffers = 2
         self.features = self.cam_handle.remote_device.node_map
+
+        if getattr(self, "_open_for_format", False):
+            # apply only pixel format if desired (optional; many cams default Mono8)
+            try:
+                if hasattr(self.features, "PixelFormat"):
+                    self.features.PixelFormat.value = "Mono8"
+            except Exception:
+                pass
+            self._init_format()  # your node-based version
+            return self
+
+        # normal run
         self.apply_params()
         self._record()
         self._init_format()
@@ -255,6 +301,7 @@ class GenICam(GenericCam):
         # ----- extra: map trigger-related keys from JSON -----
         use_trigger = bool(self.params.get('triggered', False)) or \
                       (str(self.params.get('TriggerMode', 'Off')).lower() != 'off')
+        self._triggered = use_trigger
         if use_trigger:
             # Some GenICam stacks require TriggerSelector first
             for k, v in {
@@ -270,6 +317,9 @@ class GenICam(GenericCam):
                         getattr(self.features, k).value = v
                 except Exception:
                     pass
+
+    def is_triggered(self) -> bool:
+        return bool(getattr(self, "_triggered", False))
 
     # ------------------------------------------------------------------
     def get_features(self):
@@ -315,10 +365,9 @@ class GenICam(GenericCam):
 
     def start(self):
         """Public method to begin acquisition."""
-        # Replace _internal_start_function with whatever function
         # actually starts the frame grabbing in your GenICam class.
         if not self.is_recording:
-            self._internal_start_function()
+            self._record()
 
     def stop(self):
         if not getattr(self, 'cam_handle', None):

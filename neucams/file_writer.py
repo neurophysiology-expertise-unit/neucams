@@ -20,6 +20,7 @@ def shm_frame(shm_name, shape, dtype):
     arr = np.ndarray(shape, dtype=np.dtype(dtype), buffer=shm.buf)
     return arr, shm
 
+
 def _attach_shm_with_retry(shm_name, shape, dtype, retries=3, delay=0.002):
     """Attach to an existing SharedMemory by name with a couple of short retries."""
     for i in range(retries):
@@ -31,7 +32,6 @@ def _attach_shm_with_retry(shm_name, shape, dtype, retries=3, delay=0.002):
             if i == retries - 1:
                 raise
             time.sleep(delay)
-
 
 
 class FileWriter(Process):
@@ -66,6 +66,7 @@ class FileWriter(Process):
         self.inQ = Queue()
 
         self.file_handler = None
+        self._ts_offset = None
         # NEW: sidecar timestamp log for each data file
         self.ts_file_handler = None
         self.file_frame_index = 0  # 0..(frames_per_file-1) within current file
@@ -126,6 +127,7 @@ class FileWriter(Process):
             # simple header for readability (doesn't break parsing)
             self.ts_file_handler.write('# frame_index\ttimestamp\n')
             self.ts_file_handler.flush()
+            self._ts_offset = None
         except Exception as e:
             display(f"Failed to open timestamp log for {self.filepath}: {e}", level='warning')
             self.ts_file_handler = None
@@ -145,12 +147,16 @@ class FileWriter(Process):
         if self.ts_file_handler is not None:
             try:
                 ts = float(timestamp)
-                self.ts_file_handler.write(f"{self.file_frame_index}\t{ts:.4f}\n")
+                if self._ts_offset is None:
+                    self._ts_offset = ts
+                rel = ts - self._ts_offset
+                self.ts_file_handler.write(f"{self.file_frame_index}\t{rel:.4f}\n")
                 if (self.file_frame_index & 63) == 0:
                     self.ts_file_handler.flush()
             except Exception as e:
                 display(f"Failed writing timestamp for {self.filepath}: {e}", level='warning')
         self.file_frame_index += 1
+
 
 
     def _init_file_handler(self, frame):
