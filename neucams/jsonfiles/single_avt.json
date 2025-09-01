@@ -5,17 +5,20 @@
         "driver": "avt",
         "serial_number": "50-0537068788",
         "params": {
-          "frame_rate": 60,
-          "require_full_access": true,
-          "exposure": 1000,
-          "binning": 1,
-          "trigger_mode": "Off",
+          "frame_rate": 10,
+          "exposure_auto": "Off",
+          "exposure": 500,
+          "trigger_mode": "On",
           "trigger_source": "Line1",
+          "SyncOutSource": "FrameReadout",
+          "SyncOutLevels": 1,
+          "SyncOutSelector":"SyncOut1",
+          "SyncOutPolarity": "Normal",
           "verbose": true
         }
       }
     ],
     "recorder_params": { "compress": 0, "data_folder": "I:\\mouselab\\data",
-      "experiment_folder": "test23", "recorder": "tiff", "recorder_sleep_time": 0.05 }
+      "experiment_folder": "frametest", "recorder": "tiff", "recorder_sleep_time": 0.05 }
   }
   

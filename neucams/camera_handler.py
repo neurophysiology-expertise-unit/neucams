@@ -322,19 +322,26 @@ class CameraHandler(Process):
             time.sleep(0.001)
         self.is_running.set()
 
-        # >>> START ACQUISITION FOR DRIVERS THAT SUPPORT IT (GenICam) <<<
+        # --- make sure we're disarmed before arming again ---
+        try:
+            if hasattr(self.cam, "stop") and callable(self.cam.stop):
+                self.cam.stop()
+        except Exception:
+            pass
+        # -----------------------------------------------------
+
         try:
             if hasattr(self.cam, "start") and callable(self.cam.start):
                 self.cam.start()
         except Exception:
             pass
-        # <<< END ADD >>>
 
         mode_triggered = getattr(self.cam, "is_triggered", lambda: False)()
         src = str(getattr(self.cam, "params", {}).get("trigger_source", "")).lower()
         if mode_triggered and src == "software" and hasattr(self.cam, "fire_software_trigger"):
             self.cam.fire_software_trigger()
         self.camera_ready.clear()
+
 
 
     def load_cam_settings(self, fpath):

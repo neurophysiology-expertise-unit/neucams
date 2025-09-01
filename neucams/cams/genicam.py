@@ -50,8 +50,6 @@ def get_gentl_producer_path(custom: str | None = None) -> str:
     """
     Return the CTI path we *plan* to use (first candidate or custom override).
     This doesn't guarantee it loads; loading is validated in get_harvester().
-
-    Use this for logging/UI ("which CTI are we aiming to load?").
     """
     if custom:
         if not Path(custom).exists():
@@ -127,7 +125,7 @@ def GenI_get_cam_ids(harvester: Harvester | None = None):
 # ----------------------------------------------------------------------
 # Camera wrapper
 class GenICam(GenericCam):
-    timeout_ms = 2000  # now clearly milliseconds
+    timeout_ms = 2000  # milliseconds
 
     def __init__(self, cam_id=None, params=None, format=None):
         self.h = get_harvester()
@@ -137,6 +135,7 @@ class GenICam(GenericCam):
 
         super().__init__(name='GenICam', cam_id=cam_id, params=params, format=format)
 
+        # ---------- Public snake_case params + defaults ----------
         default_params = {
             'exposure': 29000,
             'frame_rate': 30,
@@ -144,19 +143,98 @@ class GenICam(GenericCam):
             'gain_auto': False,
             'acquisition_mode': 'Continuous',
             'n_frames': 1,
-            'triggered': False
+
+            # canonical trigger keys
+            'trigger_selector': 'frame_start',
+            'trigger_mode': 'off',
+            'trigger_source': 'line1',
+            'trigger_activation': 'rising_edge',
+
+            'line_detection_level': 'ttl',
+            'line_debouncing_period': 0,
+            'pixel_format': 'mono8',
+            'exposure_mode': 'timed',
         }
         self.exposed_params = [
-            'frame_rate', 'gain', 'exposure', 'gain_auto',
-            'triggered', 'acquisition_mode', 'n_frames'
+            'frame_rate','gain','exposure','gain_auto',
+            'acquisition_mode','n_frames',
+            'trigger_selector','trigger_mode','trigger_source','trigger_activation'
         ]
-        self.params = {**default_params, **self.params}
-        default_format = {'dtype': np.uint8}
-        self.format = {**default_format, **self.format}
-        self._normalize_trigger_params()
 
-    
-        # add inside class GenICam(GenericCam):
+        self.params = {**default_params, **(self.params or {})}
+
+        # Normalize everything to snake_case & canonical values
+        self._normalize_params()
+
+    # ---------- Normalization helpers (snake_case only outwardly) ----------
+    @staticmethod
+    def _snakeify(k: str) -> str:
+        # Convert CamelCase or mixedCase to snake_case
+        out = []
+        prev_lower = False
+        for ch in k:
+            if ch.isupper() and prev_lower:
+                out.append('_')
+            out.append(ch.lower())
+            prev_lower = ch.islower()
+        return ''.join(out)
+
+    @staticmethod
+    def _enumize(s: str) -> str:
+        """
+        Turn 'frame_start' -> 'FrameStart', 'rising_edge' -> 'RisingEdge',
+             'mono8' -> 'Mono8', 'on' -> 'On', 'ttl' -> 'TTL' (keep common acronyms).
+        """
+        if not isinstance(s, str):
+            return s
+        parts = [p for p in s.strip().split('_') if p]
+        if not parts:
+            return s
+        mapping = {'ttl': 'TTL', 'lvds': 'LVDS', 'cmos': 'CMOS', 'cmosis': 'CMOSIS'}
+        out = []
+        for p in parts:
+            pl = p.lower()
+            out.append(mapping.get(pl, pl.capitalize()))
+        return ''.join(out)
+
+    def _normalize_params(self):
+        p_in = dict(self.params or {})
+        p_snake = { self._snakeify(k): v for k, v in p_in.items() }
+        # Back-compat: map 'triggered' -> 'trigger_mode'
+        if 'triggered' in p_snake:
+            if p_snake['triggered']:
+                p_snake['trigger_mode'] = 'on'
+            else:
+                p_snake.setdefault('trigger_mode', 'off')
+            try:
+                from neucams.utils import display
+                display("[GenICam] 'triggered' is deprecated; use 'trigger_mode': 'on'/'off'.", level='warning')
+            except Exception:
+                pass
+        self.params = p_snake
+        self.params.setdefault('trigger_selector','frame_start')
+        self.params.setdefault('trigger_source','line1')
+        self.params.setdefault('trigger_activation','rising_edge')
+
+    # ---------- Node set helper with logging ----------
+    @staticmethod
+    def _set_if_present(nm, key, val):
+        if val is None:
+            return
+        try:
+            if not hasattr(nm, key):
+                print(f"[GenICam] Missing node: {key}")
+                return
+            node = getattr(nm, key)
+            if hasattr(node, "is_writable") and not node.is_writable:
+                print(f"[GenICam] Skip {key}: not writable right now.")
+                return
+            node.value = val
+        except Exception as e:
+            print(f"[GenICam] Failed {key}={val}: {e}")
+
+
+    # ---------- Format probe ----------
     def _init_format(self):
         # Prefer node map values → works even before first frame, including trigger mode
         try:
@@ -186,25 +264,17 @@ class GenICam(GenericCam):
         except Exception:
             pass
 
-    
-    
-    def _normalize_trigger_params(self):
-        """Coalesce lower/upper case keys from JSON to the GenICam names we set."""
-        p = self.params or {}
-        def coalesce(*keys, default=None):
-            for k in keys:
-                if k in p:
-                    return p[k]
-            return default
-        trig_mode = coalesce('TriggerMode', 'trigger_mode', default='Off')
-        trig_src  = coalesce('TriggerSource', 'trigger_source', default='Line1')
-        trig_act  = coalesce('TriggerActivation', 'trigger_activation', default='RisingEdge')
-        # normalize into canonical keys used by apply_params()
-        self.params['TriggerMode'] = trig_mode
-        self.params['TriggerSource'] = trig_src
-        self.params['TriggerActivation'] = trig_act
-        # convenience: 'triggered' true if TriggerMode is On
-        self.params['triggered'] = bool(p.get('triggered', False)) or str(trig_mode).lower() == 'on'
+    # ---------- Software trigger ----------
+    def fire_software_trigger(self):
+        try:
+            if hasattr(self.features, "TriggerSoftware"):
+                self.features.TriggerSoftware.execute()  # <-- not .run()
+                display(f"[GenICam {self.cam_id}] Software trigger fired.")
+            else:
+                display(f"[GenICam {self.cam_id}] TriggerSoftware node not present.", level='warning')
+        except Exception as e:
+            display(f"[GenICam {self.cam_id}] Software trigger failed: {e}", level='error')
+
 
     # ------------------------------------------------------------------
     def is_connected(self):
@@ -245,13 +315,12 @@ class GenICam(GenericCam):
         self.features = self.cam_handle.remote_device.node_map
 
         if getattr(self, "_open_for_format", False):
-            # apply only pixel format if desired (optional; many cams default Mono8)
             try:
                 if hasattr(self.features, "PixelFormat"):
                     self.features.PixelFormat.value = "Mono8"
             except Exception:
                 pass
-            self._init_format()  # your node-based version
+            self._init_format()
             return self
 
         # normal run
@@ -268,8 +337,7 @@ class GenICam(GenericCam):
         else:
             display('GenICam cam __exit__ called, but camera was never opened.', level='warning')
         self.close()
-        # Return False so exceptions propagate
-        return False
+        return False  # propagate exceptions
 
     def close(self):
         if getattr(self, 'h', None):
@@ -282,44 +350,116 @@ class GenICam(GenericCam):
         if not getattr(self, 'cam_handle', None):
             display('apply_params() called, but camera was never opened.', level='warning')
             return
-        params = {
-            'EventNotification': 'On',
-            'PixelFormat': 'Mono8',
-            'AcquisitionFrameRate': self.params['frame_rate'],
-            'Gain': self.params['gain'],
-            'GainAuto': 'Once' if self.params['gain_auto'] else 'Off',
-            'ExposureTime': self.params['exposure'],
-            'ExposureMode': 'Timed'
-        }
-        for key, val in params.items():
+
+        nm = self.features  # node map
+        p = self.params
+
+        # Decide trigger mode first; this affects AFR writability
+        use_trigger = str(self.params.get('trigger_mode', 'off')).lower() == 'on'
+        self._triggered = use_trigger  # keep internal flag for logs
+
+        # Stop stream while applying (avoid "Node is not writable" mid-stream)
+        was_recording = getattr(self, 'is_recording', False)
+        if was_recording:
             try:
-                if hasattr(self.features, key):
-                    getattr(self.features, key).value = val
+                self.cam_handle.stop()
+                self.is_recording = False
+                display(f"[GenICam {self.cam_id}] Paused stream to apply settings…")
+            except Exception as e:
+                display(f"[GenICam {self.cam_id}] Could not pause: {e}", level='warning')
+
+        # ---- Always-on base (snake_case → exact nodes) ----
+        pixel_format = self._enumize(p.get('pixel_format', 'mono8'))
+        exposure_mode = self._enumize(p.get('exposure_mode', 'timed'))
+
+        base_map = [
+            ('EventNotification',                 'On'),  # enum
+            ('PixelFormat',                       pixel_format),  # enum
+            ('Gain',                              float(p.get('gain', 8))),
+            ('ExposureTime',                      float(p.get('exposure', 29000))),
+            ('ExposureMode',                      exposure_mode),  # enum
+
+            # Optional bandwidth controls
+            ('DeviceLinkThroughputLimit',         p.get('device_link_throughput_limit', None)),
+            ('DeviceLinkThroughputLimitMode',     self._enumize(p['device_link_throughput_limit_mode']) if 'device_link_throughput_limit_mode' in p else None),
+        ]
+        for node, val in base_map:
+            self._set_if_present(nm, node, val)
+
+        # Instead of always writing GainAuto:
+        if hasattr(nm, 'GainAuto') and hasattr(nm.GainAuto, 'is_writable') and nm.GainAuto.is_writable:
+            nm.GainAuto.value = self._enumize('once' if p.get('gain_auto', False) else 'off')
+        else:
+            print("[GenICam] Skip GainAuto: not present/writable.")
+
+        # ---- Trigger block ----
+        if use_trigger:
+            # 0) Disarm first so nodes become writable
+            self._set_if_present(nm, 'TriggerMode', 'Off')
+
+            # 1) Configure line I/O so trigger-related nodes aren't gated
+            try:
+                if hasattr(nm, 'LineSelector'): nm.LineSelector.value = 'Line1'
+                if hasattr(nm, 'LineMode'):     nm.LineMode.value     = 'Input'
             except Exception:
                 pass
 
-        # ----- extra: map trigger-related keys from JSON -----
-        use_trigger = bool(self.params.get('triggered', False)) or \
-                      (str(self.params.get('TriggerMode', 'Off')).lower() != 'off')
-        self._triggered = use_trigger
-        if use_trigger:
-            # Some GenICam stacks require TriggerSelector first
-            for k, v in {
-                'TriggerSelector':       self.params.get('TriggerSelector', 'FrameStart'),
-                'TriggerMode':           self.params.get('TriggerMode', 'On'),
-                'TriggerSource':         self.params.get('TriggerSource', 'Line1'),
-                'TriggerActivation':     self.params.get('TriggerActivation', 'RisingEdge'),
-                'lineDetectionLevel':    self.params.get('lineDetectionLevel', 'TTL'),
-                'lineDebouncingPeriod':  self.params.get('lineDebouncingPeriod', 0)
-            }.items():
-                try:
-                    if hasattr(self.features, k):
-                        getattr(self.features, k).value = v
-                except Exception:
-                    pass
+            # 2) Now set selector/source/activation (only if writable)
+            trig_selector   = self._enumize(self.params.get('trigger_selector','frame_start'))
+            trig_source     = self._enumize(self.params.get('trigger_source','line1'))
+            trig_activation = self._enumize(self.params.get('trigger_activation','rising_edge'))
 
+            # Check writability before setting each trigger node
+            if hasattr(nm, 'TriggerSelector') and hasattr(nm.TriggerSelector, 'is_writable') and nm.TriggerSelector.is_writable:
+                nm.TriggerSelector.value = trig_selector
+            else:
+                print("[GenICam] Skip TriggerSelector: not writable.")
+
+            if hasattr(nm, 'TriggerSource') and hasattr(nm.TriggerSource, 'is_writable') and nm.TriggerSource.is_writable:
+                nm.TriggerSource.value = trig_source
+            else:
+                print("[GenICam] Skip TriggerSource: not writable.")
+
+            if hasattr(nm, 'TriggerActivation') and hasattr(nm.TriggerActivation, 'is_writable') and nm.TriggerActivation.is_writable:
+                nm.TriggerActivation.value = trig_activation
+            else:
+                print("[GenICam] Skip TriggerActivation: not writable.")
+
+            # 3) Arm
+            self._set_if_present(nm, 'TriggerMode', 'On')
+            display(f"[GenICam {self.cam_id}] Trigger ARMED: selector={trig_selector}, source={trig_source}, activation={trig_activation}")
+
+            # Vendor niceties (DALSA) - only if writable
+            if hasattr(nm, 'lineDetectionLevel') and hasattr(nm.lineDetectionLevel, 'is_writable') and nm.lineDetectionLevel.is_writable:
+                nm.lineDetectionLevel.value = self._enumize(p['line_detection_level']) if 'line_detection_level' in p else None
+            else:
+                print("[GenICam] Skip lineDetectionLevel: not writable.")
+
+            if hasattr(nm, 'lineDebouncingPeriod') and hasattr(nm.lineDebouncingPeriod, 'is_writable') and nm.lineDebouncingPeriod.is_writable:
+                nm.lineDebouncingPeriod.value = p.get('line_debouncing_period', None)
+            else:
+                print("[GenICam] Skip lineDebouncingPeriod: not writable.")
+        else:
+            # Free-run: don't force AFR knobs if they're RO; set if writable
+            self._set_if_present(nm, 'TriggerMode', 'Off')
+            # Some models lock AFREnable; just try politely:
+            self._set_if_present(nm, 'AcquisitionFrameRateEnable', True)
+            self._set_if_present(nm, 'AcquisitionFrameRate', float(self.params.get('frame_rate', 30)))
+            display(f"[GenICam {self.cam_id}] Trigger OFF (free-run).")
+
+        # Resume if we paused
+        if was_recording:
+            try:
+                self.cam_handle.start()
+                self.is_recording = True
+                display(f"[GenICam {self.cam_id}] Resumed stream after applying settings.")
+            except Exception as e:
+                display(f"[GenICam {self.cam_id}] Failed to resume: {e}", level='error')
+
+    # --- is_triggered() ---
     def is_triggered(self) -> bool:
-        return bool(getattr(self, "_triggered", False))
+        return str(self.params.get('trigger_mode','off')).lower() == 'on'
+
 
     # ------------------------------------------------------------------
     def get_features(self):
@@ -343,7 +483,7 @@ class GenICam(GenericCam):
                 with self.cam_handle.fetch(timeout=timeout_ms) as buffer:
                     component = buffer.payload.components[0]
                     frame = np.copy(component.data.reshape(component.height, component.width))
-                    timestamp = buffer.timestamp  # currently unused
+                    timestamp = buffer.timestamp
             except Exception:
                 frame = np.array([])
                 timestamp = 0
@@ -354,28 +494,43 @@ class GenICam(GenericCam):
         if not getattr(self, 'cam_handle', None):
             display('_record() called, but camera was never opened.', level='warning')
             return
-        self.cam_handle.start()
-        limit = self.params['n_frames'] if self.params['acquisition_mode'] == "MultiFrame" else None
-        self.t_start = time.time()
-        self.frame_generator = self.get_frame_generator(
-            n_frames=limit,
-            timeout_ms=self.timeout_ms
-        )
-        self.is_recording = True
+        try:
+            self.cam_handle.start()
+            self.t_start = time.time()
+            limit = self.params['n_frames'] if self.params['acquisition_mode'] == "MultiFrame" else None
+            self.frame_generator = self.get_frame_generator(
+                n_frames=limit,
+                timeout_ms=self.timeout_ms
+            )
+            self.is_recording = True
+
+            if self.is_triggered():
+                display(f"[GenICam {self.cam_id}] ARMED and listening for trigger … (no frames until trigger)")
+            else:
+                fr = self.params.get('frame_rate', None)
+                display(f"[GenICam {self.cam_id}] Free-run started at ~{fr} fps.")
+        except Exception as e:
+            display(f"[GenICam {self.cam_id}] Failed to start acquisition: {e}", level='error')
+            self.is_recording = False
 
     def start(self):
         """Public method to begin acquisition."""
-        # actually starts the frame grabbing in your GenICam class.
         if not self.is_recording:
+            display(f"[GenICam {self.cam_id}] Start pressed.")
             self._record()
+        else:
+            display(f"[GenICam {self.cam_id}] Start pressed but already recording.", level='warning')
 
     def stop(self):
         if not getattr(self, 'cam_handle', None):
             display('stop() called, but camera was never opened.', level='warning')
             return
-        self.cam_handle.stop()
-        self.is_recording = False
-        display('GenICam cam stopped.')
+        try:
+            self.cam_handle.stop()
+            self.is_recording = False
+            display(f"[GenICam {self.cam_id}] Stopped acquisition.")
+        except Exception as e:
+            display(f"[GenICam {self.cam_id}] stop() failed: {e}", level='error')
 
     def image(self):
         if not getattr(self, 'cam_handle', None):

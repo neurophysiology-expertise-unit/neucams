@@ -319,6 +319,16 @@ class CamWidget(BaseCameraWidget):
             self._set_stop_text()
         else:
             self._set_start_text()
+        
+        # Enable the Start/Stop button only when appropriate:
+        # - If acquisition is NOT running, enable only when camera_ready is set
+        # - If acquisition IS running, keep enabled so user can stop
+        is_running = self.cam_handler.start_trigger.is_set() and not self.cam_handler.stop_trigger.is_set()
+        if not is_running:
+            self.start_stop_pushButton.setEnabled(self.cam_handler.camera_ready.is_set())
+        else:
+            self.start_stop_pushButton.setEnabled(True)
+        
         if self.display_settings.isVisible():
             self.is_img_processed = False
         self._update_img()

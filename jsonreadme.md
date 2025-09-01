@@ -214,4 +214,14 @@ Each camera lives inside the top‑level `"cams"` list:
 
 ---
 
+## Output (recording/export)
+
+If you select a TIFF-based output format, you can optionally control the per-frame file size/tiling via `tiff_size`.
+
+- `tiff_size` (integer, bytes): Target chunk/tile size when writing TIFF. Helps balance I/O vs. memory. If omitted, a driver default is used.
+
+> Note: This parameter is only applied when the selected output is TIFF; it is ignored for other formats.
+
+---
+
 *End of README*

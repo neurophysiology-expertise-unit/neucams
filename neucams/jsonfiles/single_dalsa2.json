@@ -7,10 +7,8 @@
         "params": {
             "exposure": 1500,
             "frame_rate": 10,
-            "n_frames": 1,
-            "binning": 1,
-            "trigger_mode": "Off",
-            "trigger_source": "Line1"
+            "trigger_mode": "On",
+            "trigger_source": "software"
         },
         "recorder_params": {
             "recorder": "opencv",
@@ -21,8 +19,9 @@
     "recorder_params": {
         "compress": 0,
         "data_folder": "I:\\mouselab\\data",
-        "experiment_folder": "EXP_TEST",
+        "experiment_folder": "patatess",
         "recorder": "tiff",
+        "tiff_size": 128,
 		"recorder_sleep_time":0.05
     },
     "server_params": {

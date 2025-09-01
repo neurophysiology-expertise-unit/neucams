@@ -119,19 +119,23 @@ class FileWriter(Process):
 
     # --- Timestamp sidecar helpers ---
     def _open_ts_log(self):
-        """Open the sidecar .txt next to current self.filepath and reset per-file index."""
+        """Open (once per run) a single timelog.txt in the target folder and reset global index."""
         try:
-            ts_path = splitext(self.filepath)[0] + '.txt'
-            # Ensure folder exists (created in _init_file_handler)
+            folder = dirname(self.get_filepath()) or '.'
+            base_name = 'timelog'
+            i = 1
+            ts_path = join(folder, base_name + '.txt')
+            while isfile(ts_path):
+                i += 1
+                ts_path = join(folder, f"{base_name}_{i}.txt")
             self.ts_file_handler = open(ts_path, 'w', encoding='utf-8')
-            # simple header for readability (doesn't break parsing)
             self.ts_file_handler.write('# frame_index\ttimestamp\n')
             self.ts_file_handler.flush()
             self._ts_offset = None
+            self.file_frame_index = 0
         except Exception as e:
-            display(f"Failed to open timestamp log for {self.filepath}: {e}", level='warning')
+            display(f"Failed to open timestamp log in {folder}: {e}", level='warning')
             self.ts_file_handler = None
-        self.file_frame_index = 0
 
     def _release_ts_log(self):
         if self.ts_file_handler is not None:

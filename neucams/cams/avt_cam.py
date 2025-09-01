@@ -29,7 +29,6 @@ def _has(cam, feat: str) -> bool:
     return hasattr(cam, feat)
 
 def _auto_mode(val):
-    # normalize to GenICam enums: Off | Once | Continuous
     if isinstance(val, bool):
         return "Continuous" if val else "Off"
     if isinstance(val, (int, float)):
@@ -76,7 +75,6 @@ def _safe_set(node, feat_name, value, clamp=False, vprint=lambda *_: None):
         return None
 
 def _first_present(d: dict, names, default=None):
-    # case-insensitive read with alias list (e.g. ["exposure_auto", "ExposureAuto"])
     for n in names:
         if n in d:
             return d[n]
@@ -101,31 +99,38 @@ class AVTCam(GenericCam):
             # imaging
             "pixel_format": "Mono8",
             "exposure": 148.0,              # microseconds (used only if exposure_auto is Off)
-            "exposure_auto": "Off",         # Off|Once|Continuous  (also accept 'ExposureAuto')
+            "exposure_auto": "Off",         # Off|Once|Continuous
             "gain": 0.0,                    # dB
-            "gain_auto": "Off",             # Off|Once|Continuous  (also accept 'GainAuto')
+            "gain_auto": "Off",             # Off|Once|Continuous
             "binning": 1,
             "reverse_x": False,
             "reverse_y": False,
             # acquisition
             "acquisition_mode": "Continuous",
-            "n_frames": 1,                  # used for MultiFrame
+            "n_frames": 1,
             # free-run fps
             "frame_rate": 30.0,             # target FPS in free-run -> AcquisitionFrameRateAbs
             # trigger
-            "triggered": False,
-            "trigger_mode": "Off",
+            "trigger_mode": "Off",          # <-- single source of truth
             "trigger_source": "Line1",
             "trigger_activation": "RisingEdge",
             "trigger_delay_us": None,
+            # output line (apply only when trigger is On)
+            "line_selector": None,           # maps to LineSelector
+            "line_mode": None,               # maps to LineMode
+            "line_source": None,             # maps to LineSource
+            "user_output_selector": None,    # maps to UserOutputSelector
+            "user_output_value": None,       # maps to UserOutputValue (bool)
             # GigE transport (optional)
             "stream_constrain": None,       # bool
             "stream_bps": None,             # int bytes/sec
             "packet_size": None,            # int (e.g., 8228 or 1500)
             # behavior
             "require_full_access": False,
-            # logging (per-camera; no launcher import needed)
+            # logging
             "verbose": None,
+            # legacy alias (UI may still set it) — we won't expose it as a param anymore
+            "triggered": None,
         }
         fmt = {"dtype": np.uint8}
 
@@ -137,7 +142,7 @@ class AVTCam(GenericCam):
             format={**fmt, **(format or {})},
         )
 
-        # Exposed params (used by UI/handler in your app)
+        # Only expose the canonical ones (remove legacy confusion)
         self.exposed_params = [
             "pixel_format",
             "frame_rate",
@@ -148,11 +153,16 @@ class AVTCam(GenericCam):
             "binning",
             "reverse_x",
             "reverse_y",
-            "triggered",
             "trigger_mode",
             "trigger_source",
             "trigger_activation",
             "trigger_delay_us",
+            # output line controls
+            "line_selector",
+            "line_mode",
+            "line_source",
+            "user_output_selector",
+            "user_output_value",
             "acquisition_mode",
             "n_frames",
             "stream_constrain",
@@ -162,7 +172,6 @@ class AVTCam(GenericCam):
             "verbose",
         ]
 
-        # resolve verbosity: env overrides per-camera param; no external import
         pverb = self.params.get("verbose", None)
         self._verbose = True if _env_verbose() else (bool(pverb) if pverb is not None else False)
         self._v = (lambda msg: print(msg)) if self._verbose else (lambda *_: None)
@@ -173,14 +182,12 @@ class AVTCam(GenericCam):
         self.is_recording = False
 
     def _apply_format_only(self):
-        # Pixel format influences dtype; binning influences w/h.
         pf = self.params.get("pixel_format", "Mono8")
         try:
             enum = getattr(PixelFormat, pf) if isinstance(pf, str) else pf
             self.cam_handle.set_pixel_format(enum)
         except Exception:
             pass
-        # Binning H/V if present
         if hasattr(self.cam_handle, "BinningHorizontal"):
             try: self.cam_handle.BinningHorizontal.set(int(self.params.get("binning", 1)))
             except Exception: pass
@@ -213,7 +220,7 @@ class AVTCam(GenericCam):
         self.vimba = VmbSystem.get_instance()
         self.vimba.__enter__()
 
-        # Resolve serial -> id *after* Vimba is up
+        # Resolve serial -> id after Vimba is up
         if not self.cam_id and self.serial_number:
             for c in self.vimba.get_all_cameras():
                 try:
@@ -244,7 +251,7 @@ class AVTCam(GenericCam):
             if hasattr(self.cam_handle, "_Camera__access_mode"):
                 setattr(self.cam_handle, "_Camera__access_mode", AccessMode.Full)
                 self._v("[AVT][enter] Requested AccessMode.Full")
-            self.cam_handle.__enter__()
+            self.cam_handle.__enter__()  # open
             self._read_only = False
             self._v(f"[AVT {self.cam_id}] Opened with access: Full")
         except VmbCameraError as e:
@@ -258,15 +265,11 @@ class AVTCam(GenericCam):
             self._read_only = True
             self._v(f"[AVT {self.cam_id}] Opened with access: Read")
 
-        # open camera handle (Full/Read) as you already do
-
         if getattr(self, "_open_for_format", False):
-            # format-only peek: do NOT start stream, do NOT full apply
             self._apply_format_only()
-            self._init_format()   # reads Width/Height nodes
+            self._init_format()
             return self
 
-        # normal run: do not start streaming here
         # Pixel format (best-effort)
         pf = self.params.get("pixel_format", "Mono8")
         enum = getattr(PixelFormat, pf) if isinstance(pf, str) else pf
@@ -286,7 +289,6 @@ class AVTCam(GenericCam):
             self._v(f"[AVT {self.cam_id}] require_full_access=True and access is Read. Not starting stream.")
             return self
 
-        # DO NOT start streaming here. Just learn format and exit.
         self._init_format()
         try:
             self._log_resulting_fps(self.cam_handle)
@@ -316,7 +318,6 @@ class AVTCam(GenericCam):
 
     # --- FPS: set/read AcquisitionFrameRateAbs only ----------------------
     def _set_fps_abs(self, cam, fps: float):
-        """Set AcquisitionFrameRateAbs only."""
         try:
             feat = cam.get_feature_by_name("AcquisitionFrameRateAbs")
         except Exception:
@@ -339,7 +340,6 @@ class AVTCam(GenericCam):
             return None, None
 
     def _log_resulting_fps(self, cam):
-        """Read back AcquisitionFrameRateAbs only."""
         try:
             val = cam.get_feature_by_name("AcquisitionFrameRateAbs").get()
             self._v(f"[AVT {getattr(cam, 'get_id', lambda:'?')()}] AcquisitionFrameRateAbs = {val}")
@@ -357,7 +357,7 @@ class AVTCam(GenericCam):
             raise RuntimeError("apply_params() before camera open")
 
         p = self.params
-        P = {k.lower(): v for k, v in p.items()}  # case-insensitive
+        P = {k.lower(): v for k, v in p.items()}
 
         def node(name):
             if not _has(self.cam_handle, name):
@@ -398,7 +398,7 @@ class AVTCam(GenericCam):
         # Acquisition mode / multiframe
         if P.get("acquisition_mode"):
             apply("AcquisitionMode", p.get("acquisition_mode", "Continuous"))
-        if P.get("acquisition_mode") == "multiframe":
+        if str(P.get("acquisition_mode", "")).lower() == "multiframe":
             if _has(self.cam_handle, "AcquisitionFrameCount"):
                 apply("AcquisitionFrameCount", int(P.get("n_frames", 1)))
 
@@ -412,13 +412,17 @@ class AVTCam(GenericCam):
         if _has(self.cam_handle, "ReverseY"):
             apply("ReverseY", bool(P.get("reverse_y", False)))
 
-        # Trigger vs free-run — single source of truth = trigger_mode
+        # ---- Trigger vs free-run — SINGLE source of truth = trigger_mode ----
+        # Accept legacy alias 'triggered' only as an override when explicitly set.
         use_trigger = (str(P.get("trigger_mode", "Off")).strip().lower() == "on")
-        self._triggered = use_trigger
+        if p.get("triggered") is not None:  # legacy UI
+            use_trigger = bool(p.get("triggered"))
+        self._triggered = bool(use_trigger)
+
         if _has(self.cam_handle, "TriggerSelector"):
             apply("TriggerSelector", "FrameStart")
 
-        if use_trigger:
+        if self._triggered:
             apply("TriggerMode", "On")
             if _has(self.cam_handle, "TriggerSource"):
                 apply("TriggerSource", p.get("trigger_source", "Line1"))
@@ -426,6 +430,18 @@ class AVTCam(GenericCam):
                 apply("TriggerActivation", p.get("trigger_activation", "RisingEdge"))
             if p.get("trigger_delay_us") is not None and _has(self.cam_handle, "TriggerDelayAbs"):
                 apply("TriggerDelayAbs", float(p["trigger_delay_us"]), clamp=True)
+
+            # Output line configuration (only when trigger is On)
+            if p.get("line_selector") is not None:
+                apply("LineSelector", p.get("line_selector"))
+            if p.get("line_mode") is not None:
+                apply("LineMode", p.get("line_mode"))
+            if p.get("line_source") is not None:
+                apply("LineSource", p.get("line_source"))
+            if p.get("user_output_selector") is not None:
+                apply("UserOutputSelector", p.get("user_output_selector"))
+            if p.get("user_output_value") is not None:
+                apply("UserOutputValue", bool(p.get("user_output_value")))
         else:
             if _has(self.cam_handle, "TriggerMode"):
                 apply("TriggerMode", "Off")
@@ -452,35 +468,43 @@ class AVTCam(GenericCam):
         def _gen():
             prev_shm = None
             n = 0
+            timeout_count = 0
             while self.is_recording:
                 try:
                     f = self.cam_handle.get_frame(timeout_ms=self.timeout)
                 except VmbTimeout:
-                    self._v(f"[AVT {self.cam_id}] get_frame timeout @ n={n}")
+                    # In trigger mode, timeouts are normal; don't spam
+                    timeout_count += 1
+                    if not self._triggered and self._verbose:
+                        print(f"[AVT {self.cam_id}] get_frame timeout @ n={n}")
+                    elif self._triggered and self._verbose and timeout_count % 100 == 1:
+                        print(f"[AVT {self.cam_id}] waiting for trigger… (timeouts={timeout_count})")
                     continue
                 if f is None:
-                    self._v(f"[AVT {self.cam_id}] get_frame returned None @ n={n}")
+                    if self._verbose:
+                        print(f"[AVT {self.cam_id}] get_frame returned None @ n={n}")
                     continue
+
                 arr = f.as_numpy_ndarray()
                 carr = np.ascontiguousarray(arr)
                 shm = shared_memory.SharedMemory(create=True, size=carr.nbytes)
                 np.ndarray(carr.shape, dtype=carr.dtype, buffer=shm.buf)[:] = carr
                 meta = (f.get_id(), f.get_timestamp())
+
                 if self._verbose and (n < 3 or (n % 100 == 0)):
                     print(f"[AVT {self.cam_id}] frame#{n} id={meta[0]} ts={meta[1]} shape={carr.shape} dtype={carr.dtype}")
+
                 if prev_shm is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         prev_shm.close()
-                    except Exception:
-                        pass
                 prev_shm = shm
                 n += 1
                 yield (shm.name, carr.shape, str(carr.dtype)), meta
+
             if prev_shm is not None:
                 try:
                     name = prev_shm.name
                     prev_shm.close()
-                    # Ensure unlink in case nobody consumed it
                     from multiprocessing import shared_memory as _shm
                     with contextlib.suppress(FileNotFoundError):
                         _shm.SharedMemory(name=name).unlink()
@@ -490,10 +514,16 @@ class AVTCam(GenericCam):
         self._gen = _gen()
 
     def start(self):
-        """Begin acquisition/generator (idempotent)."""
+        """Arm/start acquisition (idempotent)."""
         if self.is_recording:
             return
-        # Prefer explicit AcquisitionStart if available
+        # Always (re)apply trigger/fps on start to avoid stale mode
+        try:
+            if not self._read_only:
+                self.apply_params()
+        except Exception:
+            pass
+        # Clean arm
         try:
             if hasattr(self.cam_handle, "AcquisitionStart"):
                 self.cam_handle.AcquisitionStart.run()
@@ -503,17 +533,26 @@ class AVTCam(GenericCam):
         self._start_stream()
 
     def stop(self):
+        """Disarm/stop acquisition and generator."""
         self.is_recording = False
         self._gen = None
-        # Politely stop device acquisition if supported
+
+        # Abort any pending wait and then stop acquisition; this truly stops "listening".
+        try:
+            if hasattr(self.cam_handle, "AcquisitionAbort"):
+                self.cam_handle.AcquisitionAbort.run()
+                self._v(f"[AVT {self.cam_id}] AcquisitionAbort run")
+        except Exception as e:
+            self._v(f"[AVT {self.cam_id}] AcquisitionAbort error: {e}")
+
         try:
             if hasattr(self.cam_handle, "AcquisitionStop"):
                 self.cam_handle.AcquisitionStop.run()
                 self._v(f"[AVT {self.cam_id}] AcquisitionStop run")
         except Exception as e:
             self._v(f"[AVT {self.cam_id}] AcquisitionStop error: {e}")
-        self._v(f"[AVT {self.cam_id}] stream stopped.")
 
+        self._v(f"[AVT {self.cam_id}] stream stopped.")
 
     def image(self):
         if not self.is_recording or self._gen is None:
@@ -530,7 +569,7 @@ class AVTCam(GenericCam):
 
     # ---------- Learn format (single direct frame, no SHM) ----------
     def _init_format(self):
-        # 1) Try node-based dimensions first (works in trigger mode)
+        # 1) Prefer node-based dimensions (works without streaming)
         try:
             w = getattr(self.cam_handle, "Width").get() if hasattr(self.cam_handle, "Width") else None
             h = getattr(self.cam_handle, "Height").get() if hasattr(self.cam_handle, "Height") else None
@@ -540,7 +579,6 @@ class AVTCam(GenericCam):
         if w and h:
             self.format['width']  = int(w)
             self.format['height'] = int(h)
-            # dtype from pixel_format param (fast + predictable)
             pf = str(self.params.get("pixel_format", "Mono8")).lower()
             self.format['dtype']  = (np.uint16 if ("16" in pf or "12" in pf or "10" in pf) else np.uint8)
             self.format['n_chan'] = 1
@@ -548,7 +586,7 @@ class AVTCam(GenericCam):
                     f"n_chan={self.format['n_chan']} dtype={self.format['dtype']}")
             return
 
-        # 2) If not triggered, single frame probe is okay
+        # 2) If not triggered, take a probe frame (requires acquisition running on some models)
         if not self._triggered:
             try:
                 f = self.cam_handle.get_frame(timeout_ms=self.timeout)

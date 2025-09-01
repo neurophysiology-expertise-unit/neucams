@@ -17,7 +17,7 @@ extra_files:
   - icon.ico
   - create_shortcuts.ps1
 
-#default_prefix: C:\NeuCams
+default_prefix: "%ProgramFiles%\\NeuCams"
 
 license_file: LICENSE.txt
 icon_image: icon.ico
