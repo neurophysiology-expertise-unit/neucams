@@ -10,10 +10,12 @@
           "exposure": 500,
           "trigger_mode": "On",
           "trigger_source": "Line1",
-          "SyncOutSource": "FrameReadout",
-          "SyncOutLevels": 1,
-          "SyncOutSelector":"SyncOut1",
-          "SyncOutPolarity": "Normal",
+          "sync_out_source": "FrameReadout",
+          "sync_out_levels": 1,
+          "sync_out_selector": "SyncOut2",
+          "sync_out_polarity": "Normal",
+          "stream_constrain": false,
+          "asynchronous": true,
           "verbose": true
         }
       }

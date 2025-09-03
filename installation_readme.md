@@ -83,73 +83,23 @@ Done! NeuCams should now list all devices automatically.
 
 ---
 
-## 4. Appendix A   Building the Installer *(for maintainers only)*
+## 4. Building the Installer (simplified)
 
-*The stuff below is ****99 % irrelevant**** to end users. Don't worry about it unless you’re packaging a new release.*
-
-### 4.1 Build a standalone **NeuCams.exe** with PyInstaller
+Use the provided environment and build script. This creates `dist/NeuCams/NeuCams.exe` and then wraps it into the offline installer.
 
 ```powershell
-conda activate neucams_env        # your dev env
-pip install pyinstaller==6.14.2   # one time
+# 1) Create the build environment (uses the name inside environment.yml)
+conda env create -f environment.yml
 
-cd neucams\build_neucams
-python -m PyInstaller neucams.spec --clean -y
-# one file mode (  onefile) behaves badly → keep the _internal folder
-
-# quick sanity check
-dist\NeuCams\NeuCams.exe
+# 2) Build the installer
+cd build_neucams
+powershell.exe -ExecutionPolicy Bypass -File ./build_installer.ps1
 ```
 
-Result: `dist\NeuCams\` containing `NeuCams.exe` plus `_internal\`.
-
-### 4.2 Package **NeuCams.exe** into an offline installer (Constructor)
-
-1. **Zip the payload** (run from repo root):
-
-   ```powershell
-   Compress-Archive -Path dist\NeuCams\NeuCams.exe, dist\NeuCams\_internal `
-                   -DestinationPath build_neucams\payload.zip -Force
-   ```
-
-2. **Build with Constructor**
-
-   ```powershell
-   conda create -n ctorenv -c conda-forge python=3.11 constructor -y   # one time
-   conda activate ctorenv
-
-   cd build_neucams
-   python -m constructor .
-   ```
-
-   Output: `NeuCams-1.0.0-windows-x86_64.exe` inside `build_neucams\`.
-
-### 4.3 GitHub tip   ignore `build_neucams\files`
-
-That folder is a *full copy* of the repo created by Constructor. It will blow up the repo size if committed.
-Add this to `.gitignore` **or** delete the folder after building:
-
-```
-build_neucams/files/**
-```
-
-Re create it later by copying the repo back in.
-
-### 4.4 Folder layout inside the installer
-
-```
-<install dir>\
-│  NeuCams.exe
-│  _internal\
-│  gentl\        (optional CTI files added by post_install.bat)
-│
-├─ Library\      Conda packages
-├─ Scripts\
-└─ …             Standard Conda env dirs
-```
+Notes:
+- Step 1 only needs to be done once on a new machine. If the env already exists, run `conda activate <env-name>` instead.
+- The script runs PyInstaller and bundles required runtime files. Output `.exe` is placed in `build_neucams`.
 
 ---
 
 ## 5. Credits & Feedback
-
-

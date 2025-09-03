@@ -1,5 +1,5 @@
 name: NeuCams
-version: "1.1.0"
+version: "2.0.0"
 installer_type: exe
 
 channels:
@@ -13,9 +13,8 @@ specs:
 extra_files:
   - payload.zip       # <- your PyInstaller bundle (NeuCams.exe + _internal)
   - LICENSE.txt
-  - menu/neucams.json
+  - Menu/neucams.json
   - icon.ico
-  - create_shortcuts.ps1
 
 default_prefix: "%ProgramFiles%\\NeuCams"
 

@@ -1,21 +1,20 @@
 import sys
 import os
 import time
-from os import getcwd, path
+from os import getcwd
 from os.path import dirname, join
-from functools import lru_cache
 import logging
+from pathlib import Path
 
 import numpy as np
 from PyQt5 import uic
 from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtWidgets import (QAction, QApplication, QMainWindow, QMessageBox,
-                             QMdiSubWindow, QWidget)
+                             QMdiSubWindow)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from collections import deque
 
-from .image_processing import (HistogramStretcher, ImageFlipper,
-                               ImageProcessingPipeline, ImageRotator)
+# Removed unused direct imports from image_processing; widgets manage pipelines internally
 from neucams.udp_socket import UDPSocket
 from neucams.utils import display
 from neucams.camera_handler import CameraHandler
@@ -32,6 +31,14 @@ def frame_from_shm(shm_name, shape, dtype):
     shm = shared_memory.SharedMemory(name=shm_name)
     arr = np.ndarray(shape, dtype=np.dtype(dtype), buffer=shm.buf)
     return arr, shm
+
+# -----------------------------------------------------------------------------
+# Resource helper (works for dev and PyInstaller)
+# -----------------------------------------------------------------------------
+
+def resource_path(name: str) -> str:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return str((base / name).resolve())
 
 # -----------------------------------------------------------------------------
 # Paths
@@ -68,6 +75,41 @@ class NeuCamsWindow(QMainWindow):
 
         # Load the *new* Qt Designer layout
         uic.loadUi(join(dirpath, 'UI_NeuCams.ui'), self)
+
+        # Set window icon (works with PyInstaller when icon.ico is bundled)
+        try:
+            self.setWindowIcon(QIcon(resource_path('icon.ico')))
+        except Exception:
+            pass
+
+        # Enlarge and style the Master Start/Stop tool button
+        try:
+            btn = self.mainToolBar.widgetForAction(self.actionMasterStartStop)
+            if btn is not None:
+                from PyQt5.QtCore import QSize
+                btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+                btn.setMinimumWidth(120)
+                btn.setMinimumHeight(32)
+                self.mainToolBar.setIconSize(QSize(20, 20))
+                btn.setStyleSheet(
+                    "QToolButton {"
+                    "  background-color: #eef3fa;"
+                    "  padding: 6px 12px;"
+                    "  border: 2px solid #b8c7e0;"
+                    "  border-radius: 0px;"
+                    "  font-weight: 600;"
+                    "}"
+                    "QToolButton:hover {"
+                    "  background-color: #e6eef9;"
+                    "  border-color: #a8b9d8;"
+                    "}"
+                    "QToolButton:checked {"
+                    "  background-color: #f6ece9;"
+                    "  border-color: #d8bdb5;"
+                    "}"
+                )
+        except Exception:
+            pass
 
         # --- Logging Setup ---
         # self.log_message.connect(self.log_textEdit.append)
@@ -121,6 +163,14 @@ class NeuCamsWindow(QMainWindow):
         # Misc UI initialisation
         self.mdiArea.setActivationOrder(1)
         self.menuView.triggered[QAction].connect(self._view_menu_actions)
+
+        # --- Master Start/Stop wiring ---
+        self.actionMasterStartStop.toggled.connect(self._master_toggled)
+        # Periodically update availability
+        self._master_ui_timer = QTimer(self)
+        self._master_ui_timer.timeout.connect(self._update_master_action_enabled)
+        self._master_ui_timer.start(150)
+        self._update_master_action_enabled()
 
         self.show()
 
@@ -236,6 +286,45 @@ class NeuCamsWindow(QMainWindow):
             self.mdiArea.setViewMode(0)
             self.mdiArea.tileSubWindows()
 
+    # ---- Master action logic ----
+    def _eligible_cam_widgets_for_master(self):
+        # Skip cameras that are configured for trigger
+        return [w for w in self.cam_widgets if not w.is_triggered]
+
+    def _all_ready(self):
+        candidates = self._eligible_cam_widgets_for_master()
+        if not candidates:
+            return False
+        return all(w.cam_handler.camera_ready.is_set() for w in candidates)
+
+    def _update_master_action_enabled(self):
+        # Enabled when: all eligible cams ready OR the master is already toggled on
+        enable = self._all_ready()
+        self.actionMasterStartStop.setEnabled(enable or self.actionMasterStartStop.isChecked())
+        # Update text to reflect current intent (no recording semantics)
+        self.actionMasterStartStop.setText("Master Stop" if self.actionMasterStartStop.isChecked() else "Master Start")
+
+    def _master_toggled(self, checked: bool):
+        if checked:
+            # Start all eligible and ready cams (do not touch recording state)
+            for w in self._eligible_cam_widgets_for_master():
+                ch = w.cam_handler
+                if ch.camera_ready.is_set():
+                    started = ch.start_acquisition()
+                    if started:
+                        w._set_stop_text()
+            # After action, re-evaluate availability
+            self._update_master_action_enabled()
+        else:
+            # Stop all eligible cams that are currently running
+            for w in self._eligible_cam_widgets_for_master():
+                ch = w.cam_handler
+                is_running = ch.start_trigger.is_set() and not ch.stop_trigger.is_set()
+                if is_running:
+                    ch.stop_acquisition()
+                    w._set_start_text()
+            self._update_master_action_enabled()
+
     # ------------------------------------------------------------------
     # Graceful shutdown
     # ------------------------------------------------------------------
@@ -310,29 +399,24 @@ class CamWidget(BaseCameraWidget):
                 img, shm = frame_from_shm(shm_name, shape, dtype)
                 img = np.array(img, copy=True)
                 shm.close()
-                shm.unlink()
-            self.original_img = np.copy(img)
-            self.is_img_processed = False
+            self.original_img = img
             self.frame_nr = self.cam_handler.total_frames.value
-        self._update_stats()
-        if self.cam_handler.start_trigger.is_set() and not self.cam_handler.stop_trigger.is_set():
-            self._set_stop_text()
-        else:
-            self._set_start_text()
-        
-        # Enable the Start/Stop button only when appropriate:
-        # - If acquisition is NOT running, enable only when camera_ready is set
-        # - If acquisition IS running, keep enabled so user can stop
-        is_running = self.cam_handler.start_trigger.is_set() and not self.cam_handler.stop_trigger.is_set()
-        if not is_running:
-            self.start_stop_pushButton.setEnabled(self.cam_handler.camera_ready.is_set())
-        else:
-            self.start_stop_pushButton.setEnabled(True)
-        
-        if self.display_settings.isVisible():
             self.is_img_processed = False
-        self._update_img()
-        super().update()
+            self._update_img()
+        self._update_stats()
+
+    def _update_img(self):
+        if not self.cam_handler or not self.cam_handler.start_trigger.is_set():
+            return
+            
+        if self.original_img is not None and self.original_img.size > 0:
+            if not self.is_img_processed:
+                self.processed_img = self.display_settings.process_img(self.original_img)
+                self.is_img_processed = True
+            pixmap = QPixmap(nparray_to_qimg(self.processed_img))
+            pixmap = pixmap.scaled(self.img_label.width(), self.img_label.height(),
+                                   self.AR_policy, Qt.FastTransformation)
+            self.img_label.setPixmap(pixmap)
 
     def _update_stats(self):
         current_time = time.time()
@@ -347,19 +431,6 @@ class CamWidget(BaseCameraWidget):
             self._prev_time = current_time
             self._prev_frame_nr = current_frame
         self.frame_nr_label.setText(f"frame: {current_frame}")
-
-    def _update_img(self):
-        if not self.cam_handler or not self.cam_handler.start_trigger.is_set():
-            return
-            
-        if self.original_img is not None and self.original_img.size > 0:
-            if not self.is_img_processed:
-                self.processed_img = self.display_settings.process_img(self.original_img)
-                self.is_img_processed = True
-            pixmap = QPixmap(nparray_to_qimg(self.processed_img))
-            pixmap = pixmap.scaled(self.img_label.width(), self.img_label.height(),
-                                   self.AR_policy, Qt.FastTransformation)
-            self.img_label.setPixmap(pixmap)
 
     def _start_stop_toggled(self, checked):
         if checked:

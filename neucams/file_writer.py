@@ -15,10 +15,12 @@ from multiprocessing import shared_memory
 
 VERSION = 'B0.6'
 
+
 def shm_frame(shm_name, shape, dtype):
     shm = shared_memory.SharedMemory(name=shm_name)
     arr = np.ndarray(shape, dtype=np.dtype(dtype), buffer=shm.buf)
     return arr, shm
+
 
 
 def _attach_shm_with_retry(shm_name, shape, dtype, retries=3, delay=0.002):
@@ -67,8 +69,12 @@ class FileWriter(Process):
 
         self.file_handler = None
         self._ts_offset = None
-        # NEW: sidecar timestamp log for each data file
         self.ts_file_handler = None
+        self.global_frame_index = 0
+        self._ts_scale = None  # chosen from {1, 1e3, 1e6, 1e9} to convert to seconds
+        self._ts_deltas = []   # collect a few deltas to infer scale robustly
+
+
         self.file_frame_index = 0  # 0..(frames_per_file-1) within current file
 
         self.error_count = 0
@@ -100,9 +106,8 @@ class FileWriter(Process):
         
     def get_complete_filepath(self, filepath):
         """Adds the extension, checks that the filepath is available.
-        If not, checks the next available filepath:
-            filepath.extension if that file not already present
-            otherwise filepath_i.extension where i is the first index available in the folder (does not overwrite)
+        If not, checks the next available filepath using an unpadded index:
+            filepath_1.extension, filepath_2.extension, ...
         """
         i = 1
         complete_filepath = f"{filepath}_{i}.{self.extension}"
@@ -117,22 +122,20 @@ class FileWriter(Process):
         for i in range(len(filepath)):
             self.filepath_array[i] = filepath[i]
 
-    # --- Timestamp sidecar helpers ---
+    # --- Timestamp sidecar helpers (single file per run) ---
     def _open_ts_log(self):
-        """Open (once per run) a single timelog.txt in the target folder and reset global index."""
+        """Open a single timelog.txt in the target folder (overwrite each run)."""
         try:
             folder = dirname(self.get_filepath()) or '.'
-            base_name = 'timelog'
-            i = 1
-            ts_path = join(folder, base_name + '.txt')
-            while isfile(ts_path):
-                i += 1
-                ts_path = join(folder, f"{base_name}_{i}.txt")
+            ts_path = join(folder, 'timelog.txt')  # single fixed name
             self.ts_file_handler = open(ts_path, 'w', encoding='utf-8')
-            self.ts_file_handler.write('# frame_index\ttimestamp\n')
+            self.ts_file_handler.write('# frame_index\ttimestamp_seconds\n')
             self.ts_file_handler.flush()
+            # Reset run-wide state
             self._ts_offset = None
-            self.file_frame_index = 0
+            self._ts_scale = None
+            self._ts_deltas = []
+            self.global_frame_index = 0
         except Exception as e:
             display(f"Failed to open timestamp log in {folder}: {e}", level='warning')
             self.ts_file_handler = None
@@ -147,20 +150,58 @@ class FileWriter(Process):
             finally:
                 self.ts_file_handler = None
 
-    def _log_timestamp(self, timestamp):
-        if self.ts_file_handler is not None:
-            try:
-                ts = float(timestamp)
-                if self._ts_offset is None:
-                    self._ts_offset = ts
-                rel = ts - self._ts_offset
-                self.ts_file_handler.write(f"{self.file_frame_index}\t{rel:.4f}\n")
-                if (self.file_frame_index & 63) == 0:
-                    self.ts_file_handler.flush()
-            except Exception as e:
-                display(f"Failed writing timestamp for {self.filepath}: {e}", level='warning')
-        self.file_frame_index += 1
+    def _infer_scale_from_deltas(self):
+        if not self._ts_deltas:
+            return None
+        # Use median of collected deltas for robustness
+        med = float(np.median(self._ts_deltas))
+        # Heuristics based on typical camera timestamp units per frame interval
+        # ~0.033 -> seconds, ~33 -> milliseconds, ~33000 -> microseconds, ~33,000,000 -> nanoseconds
+        if med > 1e6:
+            return 1e9   # nanoseconds
+        if med > 1e3:
+            return 1e6   # microseconds
+        if med > 1.0:
+            return 1e3   # milliseconds
+        return 1.0       # seconds
 
+    def _log_timestamp(self, timestamp):
+        """Write 'index<TAB>seconds' with 4 decimals, infer unit scale automatically."""
+        if self.ts_file_handler is None:
+            return
+        try:
+            ts = float(timestamp)
+
+            # Establish zero at first sample
+            if self._ts_offset is None:
+                self._ts_offset = ts
+
+            rel_raw = ts - self._ts_offset  # raw units
+
+            # Collect a few deltas to infer proper scale
+            if self.global_frame_index > 0:
+                self._ts_deltas.append(rel_raw)
+                if len(self._ts_deltas) >= 3 and self._ts_scale is None:
+                    self._ts_scale = self._infer_scale_from_deltas()
+                    if self._ts_scale is None:
+                        self._ts_scale = 1.0
+
+            scale = self._ts_scale or 1.0  # default to seconds until inferred
+            # If scale looks wrong (e.g., seconds but deltas are huge), try a fallback
+            if scale == 1.0 and len(self._ts_deltas) >= 3:
+                # If seconds produce numbers that are implausibly large, try microseconds
+                if np.median(self._ts_deltas) > 10.0:
+                    scale = 1e3
+            rel_sec = rel_raw / scale
+
+            # Write line: index<TAB>seconds(4dp)
+            self.ts_file_handler.write(f"{self.global_frame_index}\t{rel_sec:.4f}\n")
+            if (self.global_frame_index & 63) == 0:
+                self.ts_file_handler.flush()
+        except Exception as e:
+            display(f"Failed writing timestamp for {self.filepath}: {e}", level='warning')
+        finally:
+            self.global_frame_index += 1
 
 
     def _init_file_handler(self, frame):
@@ -181,19 +222,23 @@ class FileWriter(Process):
                 os.makedirs(folder)
             except Exception as e:
                 print(f"Could not create folder {folder} : {e}")
-        # Close any previous handlers
+        
+        # Open timestamp log on first frame (after directory is created)
+        if self.saved_frame_count == 0 and self.ts_file_handler is None:
+            self._open_ts_log()
+            
+        # Close previous file **only** (keep timelog open across rollovers)
         self._release_file_handler()
-        self._release_ts_log()
-        # Open new handlers
+        # Open new file handler
         self.file_handler = self._get_file_handler(self.filepath, frame)
-        self._open_ts_log()
+
         
     def _get_file_handler(self, filepath, frame):
         """get specific file handler"""
         pass
         
     def _release_file_handler(self):
-        """close specific file handler (and sidecar log)"""
+        """close specific file handler (not the timelog)"""
         if self.file_handler is not None:
             try:
                 self.file_handler.close()
@@ -201,8 +246,7 @@ class FileWriter(Process):
                 pass
             finally:
                 self.file_handler = None
-        # also close sidecar here for subclasses that don't override and call super
-        self._release_ts_log()
+
 
     def _clear_queue(self):
         try:
@@ -229,18 +273,25 @@ class FileWriter(Process):
         self.set_filepath(self.filepath)
         self.start_flag.set()
         while not self.close_flag.is_set():
+            # Start of a run
             self.saved_frame_count = 0
             self.error_count = 0
+            # Don't open timestamp log yet - wait for first frame
+
             while not self.stop_flag.is_set():
                 time.sleep(self.sleeptime)
                 self._process_queue()
+
             self._close_run()
+
     
     def _close_run(self):
         self._release_file_handler()
+        self._release_ts_log()   # close the single timelog at end of run
         self._clear_queue()
         self.stop_flag.clear()
         self.is_run_closed.set()
+
   
     def _process_queue(self):
         while True:
@@ -460,11 +511,15 @@ class OpenCVWriter(FileWriter):
                          frames_per_file=frames_per_file)
         
     def _release_file_handler(self):
-        if not self.file_handler is None:
-            self.file_handler.release()
-            self.file_handler = None
-        # ensure sidecar log is also closed in this subclass override
-        self._release_ts_log()
+        if self.file_handler is not None:
+            try:
+                self.file_handler.release()
+            except Exception:
+                pass
+            finally:
+                self.file_handler = None
+        # Do NOT touch the timelog here
+
 
     def _get_file_handler(self,filepath,frame = None):
         self.w = frame.shape[1]

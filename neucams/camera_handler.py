@@ -246,6 +246,7 @@ class CameraHandler(Process):
             self.folder_path_array[i] = folder_path[i]
     
     def get_new_filename(self):
+        # date_run where run is not zero-padded
         return datetime.date.today().strftime('%y%m%d') + '_' + f"{self.run_nr}"
     
     def get_new_filepath(self):

@@ -1,69 +1,57 @@
-# NeuCams.spec
-# build with:  pyinstaller --clean -y NeuCams.spec
-import glob, os
+import glob, importlib, sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules
 
-# ------------------------------------------------------------------ paths
-ENV      = Path(r"C:/ProgramData/Miniconda3/envs/den2")
-SITEPKG  = ENV / "Lib" / "site-packages"
-LIBBIN   = ENV / "Library" / "bin"
-VMB_LIB  = SITEPKG / "vmbpy" / "c_binding" / "lib"
-MV       = Path(r"C:/Program Files/MATRIX VISION/mvIMPACT Acquire/bin/x64")
+# --- Resolve paths from the spec location (fallback if __file__ is missing)
+try:
+    SPEC_DIR = Path(__file__).resolve().parent
+except NameError:
+    SPEC_DIR = Path.cwd()              # PyInstaller sometimes runs spec without __file__
+
+ROOT      = SPEC_DIR.parent            # repo root
+PKG_DIR   = ROOT / "neucams"
+VMB_DIR   = ROOT / "vmbpy"
+GENTL_DIR = ROOT / "gentl"
+DCAM_DIR  = ROOT / "dcam"
+ICON      = str((ROOT / "icon.ico").resolve())
+
 
 def files(pattern, dest="."):
     return [(str(p), dest) for p in glob.glob(str(pattern))]
 
-# ------------------------------------------------------------------ binaries
+# --- locate cv2 binary
+cv2_mod = importlib.import_module("cv2")
+CV2_PYD = Path(cv2_mod.__file__)
+
+# --- binaries
 binaries = [
-    # vmbpy native libs
-    *files(VMB_LIB / "GcBase_MD_VC142_v3_2_AVT.dll"),
-    *files(VMB_LIB / "GenApi_MD_VC142_v3_2_AVT.dll"),
-    *files(VMB_LIB / "Log_MD_VC142_v3_2_AVT.dll"),
-    *files(VMB_LIB / "log4cpp_MD_VC142_v3_2_AVT.dll"),
-    *files(VMB_LIB / "MathParser_MD_VC142_v3_2_AVT.dll"),
-    *files(VMB_LIB / "NodeMapData_MD_VC142_v3_2_AVT.dll"),
-    *files(VMB_LIB / "VmbC.dll"),
-    *files(VMB_LIB / "VmbImageTransform.dll"),
-    *files(VMB_LIB / "XmlParser_MD_VC142_v3_2_AVT.dll"),
-
-    # OpenCV Python binding
-    *files(SITEPKG / "cv2.cp39-win_amd64.pyd"),
-
-    # Matrix Vision DLLs (so mvGenTLProducer.cti can load)
-    *files(MV / "*.dll"),
+    *files(VMB_DIR / "*.dll", "vmbpy"),
+    *files(GENTL_DIR / "*.dll", "gentl"),
+    *files(DCAM_DIR / "*.dll", "dcam"),
+    (str(CV2_PYD), "."),
 ]
 
-# ------------------------------------------------------------------ data
-BASE       = Path(os.path.abspath('.'))
-GENTL_SRC  = BASE / "cti_dll"
-
+# --- data (include Qt .ui and icon next to exe)
 datas = [
-    *files(VMB_LIB / "VmbC.xml"),
-    *files("files/neucams/view/*.ui", "neucams/view"),
-
-    # ship your repo's cti_dll folder (if you copied stuff there)
-    *[(str(p), "cti_dll") for p in GENTL_SRC.rglob("*")
-      if p.is_file() and p.suffix.lower() in (".cti", ".dll")],
-
-    # ensure MV CTIs are there even if you forgot to copy them
-    *files(MV / "*.cti", "cti_dll"),
+    *files(VMB_DIR / "VmbC.xml", "vmbpy"),
+    *files(ROOT / "neucams" / "view" / "*.ui", "neucams/view"),
+    *files(GENTL_DIR / "*.cti", "gentl"),
+    *files(ROOT / "icon.ico", "."),            # window icon available at runtime
 ]
 
-# ------------------------------------------------------------------ hidden imports
 hiddenimports = [
     "neucams.cams.genicam",
-    "pyqtgraph",
-] \
-+ collect_submodules("pyqtgraph") \
-+ collect_submodules("harvesters") \
-+ collect_submodules("genicam") \
-+ collect_submodules("pco")
+    "neucams.cams.avt_cam",
+    "neucams.cams.hamamatsu_cam",
+] + collect_submodules("harvesters") \
+  + collect_submodules("genicam") \
+  + collect_submodules("pyDCAM") \
+  + collect_submodules("pyqtgraph")      
 
 block_cipher = None
 
 a = Analysis(
-    ["files\\neucams\\__main__.py"],
+    [str(PKG_DIR / "__main__.py")],            # <-- correct entry
     pathex=[],
     binaries=binaries,
     datas=datas,
@@ -85,11 +73,11 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,            # don't compress vendor DLLs
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,
-    icon="icon.ico",
+    console=True,                               # keep console for logs
+    icon=ICON,
 )
 
 coll = COLLECT(
@@ -98,7 +86,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=False,            # no UPX here either
+    upx=False,
     upx_exclude=[],
     name="NeuCams",
 )

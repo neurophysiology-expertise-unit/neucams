@@ -4,24 +4,22 @@ setlocal EnableExtensions
 rem ---- PREFIX from Constructor; fallback if run by hand ----
 if not defined PREFIX set "PREFIX=%~dp0"
 
-rem ---- PowerShell path (simple) ----
+rem ---- PowerShell path ----
 set "PS=%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%PS%" set "PS=powershell.exe"
 set "PSFLAGS=-NoLogo -NoProfile -ExecutionPolicy Bypass"
 
-rem ---- 1) Unpack PyInstaller bundle (ignore errors) ----
+rem ---- 1) Unpack PyInstaller bundle ----
 if exist "%PREFIX%\payload.zip" (
   "%PS%" %PSFLAGS% -Command ^
     "Expand-Archive -LiteralPath '%PREFIX%\payload.zip' -DestinationPath '%PREFIX%' -Force" ^
     >nul 2>&1
 )
 
-rem ---- 2) Create shortcuts (ignore errors) ----
-if exist "%PREFIX%\create_shortcuts.ps1" (
-  "%PS%" %PSFLAGS% -File "%PREFIX%\create_shortcuts.ps1" -Prefix "%PREFIX%" >nul 2>&1
-)
+rem ---- 2) Clean up payload.zip ----
+del /Q "%PREFIX%\payload.zip" >nul 2>&1
 
-rem ---- 3) Prepend our GenTL path (user-scope only; no admin) ----
+rem ---- 3) Persist GenTL location in GENICAM_GENTL64_PATH ----
 set "MYGENTL=%PREFIX%\gentl"
 if exist "%MYGENTL%" (
   echo %GENICAM_GENTL64_PATH% | find /i "%MYGENTL%" >nul || (
@@ -30,7 +28,12 @@ if exist "%MYGENTL%" (
     ) else (
       set "NEWG=%MYGENTL%"
     )
-    setx GENICAM_GENTL64_PATH "%NEWG%" >nul 2>&1
+    rem Try machine-wide (works when installer is elevated)
+    setx GENICAM_GENTL64_PATH "%NEWG%" /M >nul 2>&1
+    if errorlevel 1 (
+      rem Fall back to current user
+      setx GENICAM_GENTL64_PATH "%NEWG%" >nul 2>&1
+    )
   )
 )
 

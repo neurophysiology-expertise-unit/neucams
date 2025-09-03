@@ -52,26 +52,37 @@ Each camera lives inside the top‑level `"cams"` list:
 
 | Key                       |        Default | What it does                                                                      |
 | ------------------------- | -------------: | --------------------------------------------------------------------------------- |
-| **pixel\_format**         |      `"Mono8"` | Output pixel format (e.g., `"Mono8"`).                                            |
-| **exposure**              |      `10000.0` | Exposure time in **μs**.                                                          |
-| **exposure\_auto**        |        `"Off"` | `"Off"`, `"Once"`, `"Continuous"` (booleans also accepted).                       |
-| **gain**                  |          `0.0` | Analog gain value.                                                                |
-| **gain\_auto**            |        `"Off"` | `"Off"`, `"Once"`, `"Continuous"` (booleans also accepted).                       |
-| **binning**               |            `1` | Sensor binning factor (applies H/V where supported).                              |
-| **reverse\_x**            |        `false` | Mirror image horizontally.                                                        |
-| **reverse\_y**            |        `false` | Mirror image vertically.                                                          |
+| **pixel\_format**         |      `"Mono8"` | Sensor output format; mapped to `PixelFormat.*`.                                  |
+| **frame\_rate**           |         `30.0` | Target FPS in **free-run**; sets `AcquisitionFrameRateAbs` when `trigger_mode="Off"`. |
+| **exposure**              |       `148.0` | Exposure time **in microseconds**; used only when `exposure_auto="Off"`.           |
+| **exposure\_auto**        |        `"Off"` | Auto exposure: `"Off"|"Once"|"Continuous"`.                                       |
+| **gain**                  |          `0.0` | Analog gain in dB; used only when `gain_auto="Off"`.                              |
+| **gain\_auto**            |        `"Off"` | Auto gain: `"Off"|"Once"|"Continuous"`.                                           |
+| **binning**               |            `1` | Applies to both H/V when supported.                                               |
+| **reverse\_x**            |        `false` | Mirror horizontally (when supported).                                             |
+| **reverse\_y**            |        `false` | Mirror vertically (when supported).                                               |
+| **trigger\_mode**         |        `"Off"` | `"On"` enables triggering; `"Off"` = free-run.                                   |
+| **trigger\_source**       |      `"Line1"` | e.g., `"Line1"`, `"Software"`, etc.                                              |
+| **trigger\_activation**   | `"RisingEdge"` | Edge polarity.                                                                    |
+| **trigger\_delay\_us**    |         `null` | Trigger delay **in microseconds** (if supported).                                 |
+| **line\_selector**        |         `null` | Maps to `LineSelector` (when configuring I/O while trigger is On).                |
+| **line\_mode**            |         `null` | Maps to `LineMode`.                                                               |
+| **line\_source**          |         `null` | Maps to `LineSource`.                                                             |
+| **user\_output\_selector**|         `null` | Maps to `UserOutputSelector`.                                                     |
+| **user\_output\_value**   |         `null` | `True`/`False`; maps to `UserOutputValue`.                                       |
+| **sync\_out\_source**     |         `null` | Maps to `SyncOutSource`.                                                          |
+| **sync\_out\_levels**     |         `null` | Integer; maps to `SyncOutLevels`.                                                 |
+| **sync\_out\_selector**   |         `null` | Maps to `SyncOutSelector`.                                                        |
+| **sync\_out\_polarity**   |         `null` | Maps to `SyncOutPolarity`.                                                        |
 | **acquisition\_mode**     | `"Continuous"` | `"Continuous"` or `"MultiFrame"`.                                                 |
-| **n\_frames**             |            `1` | Frames to grab in `"MultiFrame"`.                                                 |
-| **frame\_rate**           |         `null` | Target FPS (free-run); driver sets bps & AFR to hit it.                           |
-| **trigger\_mode**         |        `"Off"` | `"Off"` free-run, `"On"` uses external trigger.                                   |
-| **trigger\_source**       |      `"Line1"` | Trigger input source.                                                             |
-| **trigger\_activation**   | `"RisingEdge"` | Trigger edge selection.                                                           |
-| **trigger\_delay\_us**    |         `null` | Delay after trigger before exposure (μs).                                         |
-| **stream\_constrain**     |         `null` | Toggle internal stream frame-rate constrain.                                      |
-| **stream\_bps**           |         `null` | Force stream bandwidth (bytes/s); else auto when `frame_rate` set.                |
-| **packet\_size**          |         `null` | GigE packet size (bytes).                                                         |
-| **require\_full\_access** |        `false` | Refuse read‑only opens; fail if Full access not available.                        |
-| **verbose**               |         `null` | Verbose logging. *`null` = follow `NEUCAMS_VERBOSE`; effective default is quiet.* |
+| **n\_frames**             |            `1` | Used only when `acquisition_mode="MultiFrame"`.                                   |
+| **stream\_constrain**     |         `null` | Bool → `StreamFrameRateConstrain` (transport).                                     |
+| **stream\_bps**           |         `null` | Bytes/sec → `StreamBytesPerSecond` (transport).                                   |
+| **packet\_size**          |         `null` | e.g., `8228` or `1500` → `GevSCPSPacketSize`.                                     |
+| **require\_full\_access** |        `false` | If `True`, refuse to open in read-only.                                           |
+| **asynchronous**          |         `true` | **Streaming mode**: `True` = async callback + queue; `False` = sync polling.      |
+| **buffer\_count**         |           `20` | Buffer count passed to `start_streaming()` in async mode.                          |
+| **verbose**               |         `null` | If `null`, inherits `NEUCAMS_VERBOSE`; otherwise bool to force logging.           |
 
 **Notes**
 

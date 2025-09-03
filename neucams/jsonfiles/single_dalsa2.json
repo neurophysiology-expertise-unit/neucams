@@ -7,8 +7,8 @@
         "params": {
             "exposure": 1500,
             "frame_rate": 10,
-            "trigger_mode": "On",
-            "trigger_source": "software"
+            "trigger_mode": "Off",
+            "trigger_source": "Line1"
         },
         "recorder_params": {
             "recorder": "opencv",

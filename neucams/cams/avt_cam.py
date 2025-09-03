@@ -2,10 +2,12 @@ import os, sys, ctypes
 from pathlib import Path
 import numpy as np
 from multiprocessing import shared_memory
-import contextlib
+import threading
+import queue
 
 BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 AVT_DIR = BASE / "vmbpy"
+
 
 def _env_verbose() -> bool:
     val = os.environ.get("NEUCAMS_VERBOSE", "")
@@ -25,8 +27,10 @@ from vmbpy import VmbSystem, PixelFormat, VmbTimeout, AccessMode, VmbCameraError
 from .generic_cam import GenericCam
 
 # ----------------- helpers -----------------
+
 def _has(cam, feat: str) -> bool:
     return hasattr(cam, feat)
+
 
 def _auto_mode(val):
     if isinstance(val, bool):
@@ -39,6 +43,7 @@ def _auto_mode(val):
         if s in ("once",): return "Once"
         if s in ("on", "true", "1", "continuous"): return "Continuous"
     return None
+
 
 def _clamp_to_node_range(node, value: float) -> float:
     try:
@@ -54,25 +59,31 @@ def _clamp_to_node_range(node, value: float) -> float:
     except Exception:
         return float(value)
 
-def _safe_set(node, feat_name, value, clamp=False, vprint=lambda *_: None):
+
+def _safe_set(node, feat_name, value, clamp=False, vprint=lambda *_: None, log=False):
     try:
-        before = None
-        try:
-            before = node.get()
-        except Exception:
-            pass
+        applied_value = None
+        if log:
+            before = None
+            try:
+                before = node.get()
+            except Exception:
+                pass
         v = _clamp_to_node_range(node, value) if clamp else value
         node.set(v)
-        after = None
-        try:
-            after = node.get()
-        except Exception:
-            pass
-        vprint(f"[AVT][set] {feat_name}: before={before} desired={value} applied={after}")
-        return after
+        if log:
+            after = None
+            try:
+                after = node.get()
+            except Exception:
+                pass
+            vprint(f"[AVT][set] {feat_name}: before={before} desired={value} applied={after}")
+            applied_value = after
+        return applied_value
     except Exception as e:
         vprint(f"[AVT][set:EXC] {feat_name}: desired={value} error={e}")
         return None
+
 
 def _first_present(d: dict, names, default=None):
     for n in names:
@@ -85,9 +96,23 @@ def _first_present(d: dict, names, default=None):
             return low[ln]
     return default
 
+
 # ----------------- camera -----------------
 class AVTCam(GenericCam):
     timeout = 2000  # ms
+
+    # --- SHM ring state ---
+    _pool = None
+    _pool_size = 12            # reuse a small, fixed pool
+    _pool_idx = 0
+    _pool_shape = None
+    _pool_dtype = None
+    _pool_bytes = None
+
+    # --- Async streaming state ---
+    _async_queue = None        # queue.Queue of ((shm_tuple), meta)
+    _async_handler = None
+    _async_lock = None
 
     def __init__(self, cam_id=None, params=None, format=None, serial_number=None):
         self.serial_number = serial_number
@@ -121,12 +146,24 @@ class AVTCam(GenericCam):
             "line_source": None,             # maps to LineSource
             "user_output_selector": None,    # maps to UserOutputSelector
             "user_output_value": None,       # maps to UserOutputValue (bool)
+            # sync out controls
+            "sync_out_source": None,         # maps to SyncOutSource
+            "sync_out_levels": None,        # maps to SyncOutLevels
+            "sync_out_selector": None,      # maps to SyncOutSelector
+            "sync_out_polarity": None,      # maps to SyncOutPolarity
             # GigE transport (optional)
-            "stream_constrain": None,       # bool
-            "stream_bps": None,             # int bytes/sec
-            "packet_size": None,            # int (e.g., 8228 or 1500)
+            "stream_constrain": None,       # bool -> StreamFrameRateConstrain
+            "stream_bps": None,             # int bytes/sec -> StreamBytesPerSecond (may be on Stream)
+            "packet_size": None,            # int (e.g., 8228 or 1500) -> GevSCPSPacketSize
             # behavior
             "require_full_access": False,
+            # streaming mode
+            # Accept many spellings; default is ASYNC:
+            # - asynchronous/asyncronous (bool)
+            # - synchronous/syncronous (bool)
+            # - stream_mode: "async"/"asynchronous"/"asyncronous" | "sync"/"synchronous"/"syncronous"
+            "asynchronous": True,
+            "buffer_count": 20,             # for async start_streaming()
             # logging
             "verbose": None,
             # legacy alias (UI may still set it) — we won't expose it as a param anymore
@@ -163,12 +200,20 @@ class AVTCam(GenericCam):
             "line_source",
             "user_output_selector",
             "user_output_value",
+            # sync out controls
+            "sync_out_source",
+            "sync_out_levels",
+            "sync_out_selector",
+            "sync_out_polarity",
             "acquisition_mode",
             "n_frames",
             "stream_constrain",
             "stream_bps",
             "packet_size",
             "require_full_access",
+            # streaming
+            "asynchronous",
+            "buffer_count",
             "verbose",
         ]
 
@@ -180,6 +225,12 @@ class AVTCam(GenericCam):
         self.cam_handle = None
         self._gen = None
         self.is_recording = False
+
+    # -------- streaming mode resolution --------
+    def _is_async_mode(self) -> bool:
+        """Canonical: True => async streaming, False => sync/polling."""
+        return bool(self.params.get("asynchronous", True))
+
 
     def _apply_format_only(self):
         pf = self.params.get("pixel_format", "Mono8")
@@ -220,9 +271,15 @@ class AVTCam(GenericCam):
         self.vimba = VmbSystem.get_instance()
         self.vimba.__enter__()
 
+        # Cache cameras list to avoid multiple enumerations
+        try:
+            _all_cams = list(self.vimba.get_all_cameras())
+        except Exception:
+            _all_cams = []
+
         # Resolve serial -> id after Vimba is up
         if not self.cam_id and self.serial_number:
-            for c in self.vimba.get_all_cameras():
+            for c in _all_cams:
                 try:
                     sid = getattr(c, 'get_serial', lambda: None)()
                     self._v(f"[AVT][enter] Probe cam id={c.get_id()} serial={sid}")
@@ -237,7 +294,7 @@ class AVTCam(GenericCam):
             self._v(f"[AVT] Could not resolve camera (serial={self.serial_number}).")
             return self
 
-        for c in self.vimba.get_all_cameras():
+        for c in _all_cams:
             if c.get_id() == self.cam_id:
                 self.cam_handle = c
                 break
@@ -369,7 +426,7 @@ class AVTCam(GenericCam):
             if not _has(self.cam_handle, name):
                 self._v(f"[AVT][apply] skip {name} (missing)")
                 return None
-            return _safe_set(node(name), name, value, clamp=clamp, vprint=self._v)
+            return _safe_set(node(name), name, value, clamp=clamp, vprint=self._v, log=self._verbose)
 
         # ---- Exposure & Gain autos first ----
         ga = _auto_mode(_first_present(p, ["gain_auto", "GainAuto"]))
@@ -446,8 +503,8 @@ class AVTCam(GenericCam):
             if _has(self.cam_handle, "TriggerMode"):
                 apply("TriggerMode", "Off")
             # Set FPS here (Abs only)
-            fps_target = float(P.get("frame_rate", 30.0))
-            self._set_fps_abs(self.cam_handle, fps_target)
+            fps_target_rate = float(P.get("frame_rate", 30.0))
+            self._set_fps_abs(self.cam_handle, fps_target_rate)
 
         # GigE transport (optional)
         if p.get("stream_constrain") is not None and _has(self.cam_handle, "StreamFrameRateConstrain"):
@@ -457,23 +514,71 @@ class AVTCam(GenericCam):
         if p.get("packet_size") is not None and _has(self.cam_handle, "GevSCPSPacketSize"):
             apply("GevSCPSPacketSize", int(p["packet_size"]))
 
+        # IO controls
+        if p.get("sync_out_source") is not None and _has(self.cam_handle, "SyncOutSource"):
+            apply("SyncOutSource", p["sync_out_source"])
+        if p.get("sync_out_levels") is not None and _has(self.cam_handle, "SyncOutLevels"):
+            apply("SyncOutLevels", int(p["sync_out_levels"]), clamp=True)
+        if p.get("sync_out_selector") is not None and _has(self.cam_handle, "SyncOutSelector"):
+            apply("SyncOutSelector", p["sync_out_selector"])
+        if p.get("sync_out_polarity") is not None and _has(self.cam_handle, "SyncOutPolarity"):
+            apply("SyncOutPolarity", p["sync_out_polarity"])
+
     def is_triggered(self) -> bool:
         return bool(getattr(self, "_triggered", False))
 
-    # ---------- Streaming ----------
-    def _start_stream(self):
+    # ---------- SHM allocation ----------
+    def _alloc_pool(self, h: int, w: int, dtype):
+        """Allocate fixed SHM ring once, sized to exactly one frame."""
+        itemsize = np.dtype(dtype).itemsize
+        nbytes = h * w * itemsize
+
+        self._free_pool()  # just in case
+
+        self._pool = [shared_memory.SharedMemory(create=True, size=nbytes)
+                      for _ in range(self._pool_size)]
+        self._pool_idx = 0
+        self._pool_shape = (h, w)
+        self._pool_dtype = np.dtype(dtype)
+        self._pool_bytes = nbytes
+        self._v(f"[AVT {self.cam_id}] SHM pool: {self._pool_size} × {nbytes} bytes")
+
+    def _free_pool(self):
+        """Close+unlink all SHM blocks."""
+        if not self._pool:
+            return
+        for shm in self._pool:
+            try:
+                shm.close()
+                shm.unlink()
+            except Exception:
+                pass
+        self._pool = None
+        self._pool_shape = None
+        self._pool_dtype = None
+        self._pool_bytes = None
+        self._v(f"[AVT {self.cam_id}] SHM pool freed")
+
+    def _next_shm(self):
+        """Round-robin next SHM slot."""
+        shm = self._pool[self._pool_idx]
+        self._pool_idx = (self._pool_idx + 1) % self._pool_size
+        return shm
+
+    # ---------- Streaming (SYNC) ----------
+    def _start_stream_sync(self):
         self.is_recording = True
-        self._v(f"[AVT {self.cam_id}] stream starting…")
+        self._v(f"[AVT {self.cam_id}] stream (sync) starting…")
 
         def _gen():
-            prev_shm = None
             n = 0
             timeout_count = 0
+            pool_ready = False
+
             while self.is_recording:
                 try:
                     f = self.cam_handle.get_frame(timeout_ms=self.timeout)
                 except VmbTimeout:
-                    # In trigger mode, timeouts are normal; don't spam
                     timeout_count += 1
                     if not self._triggered and self._verbose:
                         print(f"[AVT {self.cam_id}] get_frame timeout @ n={n}")
@@ -486,30 +591,84 @@ class AVTCam(GenericCam):
                     continue
 
                 arr = f.as_numpy_ndarray()
-                carr = np.ascontiguousarray(arr)
-                shm = shared_memory.SharedMemory(create=True, size=carr.nbytes)
-                np.ndarray(carr.shape, dtype=carr.dtype, buffer=shm.buf)[:] = carr
+                if arr.ndim == 3:
+                    arr = arr[:, :, 0]
+
+                if (not pool_ready or
+                    self._pool_shape is None or
+                    self._pool_dtype is None or
+                    self._pool_shape != arr.shape[:2] or
+                    self._pool_dtype != arr.dtype):
+                    self._alloc_pool(arr.shape[0], arr.shape[1], arr.dtype)
+                    pool_ready = True
+
+                shm = self._next_shm()
+                dst = np.ndarray(self._pool_shape, dtype=self._pool_dtype, buffer=shm.buf)
+                np.copyto(dst, arr, casting='no')
+
                 meta = (f.get_id(), f.get_timestamp())
 
                 if self._verbose and (n < 3 or (n % 100 == 0)):
-                    print(f"[AVT {self.cam_id}] frame#{n} id={meta[0]} ts={meta[1]} shape={carr.shape} dtype={carr.dtype}")
+                    print(f"[AVT {self.cam_id}] frame#{n} id={meta[0]} ts={meta[1]} shape={dst.shape} dtype={dst.dtype}")
 
-                if prev_shm is not None:
-                    with contextlib.suppress(Exception):
-                        prev_shm.close()
-                prev_shm = shm
                 n += 1
-                yield (shm.name, carr.shape, str(carr.dtype)), meta
+                yield (shm.name, dst.shape, str(dst.dtype)), meta
 
-            if prev_shm is not None:
+        self._gen = _gen()
+
+    # ---------- Streaming (ASYNC) ----------
+    def _start_stream_async(self):
+        self.is_recording = True
+        self._v(f"[AVT {self.cam_id}] stream (async) starting…")
+
+        self._async_queue = queue.Queue(maxsize=self._pool_size)
+        self._async_lock = threading.Lock()
+
+        def handler(cam, stream, frame):
+            # Minimal work in callback: copy -> SHM, enqueue, requeue frame
+            try:
+                arr = frame.as_numpy_ndarray()
+                if arr.ndim == 3:
+                    arr = arr[:, :, 0]
+
+                with self._async_lock:
+                    if (self._pool is None or
+                        self._pool_shape != arr.shape[:2] or
+                        self._pool_dtype is None or
+                        self._pool_dtype != arr.dtype):
+                        self._alloc_pool(arr.shape[0], arr.shape[1], arr.dtype)
+
+                    shm = self._next_shm()
+                    dst = np.ndarray(self._pool_shape, dtype=self._pool_dtype, buffer=shm.buf)
+                    np.copyto(dst, arr, casting='no')
+
+                meta = (frame.get_id(), frame.get_timestamp())
+
                 try:
-                    name = prev_shm.name
-                    prev_shm.close()
-                    from multiprocessing import shared_memory as _shm
-                    with contextlib.suppress(FileNotFoundError):
-                        _shm.SharedMemory(name=name).unlink()
+                    if not self._async_queue.full():
+                        self._async_queue.put_nowait(((shm.name, dst.shape, str(dst.dtype)), meta))
+                except Exception:
+                    # queue full -> drop (better than blocking callback)
+                    pass
+            finally:
+                # ALWAYS re-queue frame ASAP
+                try:
+                    cam.queue_frame(frame)
                 except Exception:
                     pass
+
+        self._async_handler = handler
+        buf_cnt = int(self.params.get("buffer_count", 20))
+        # start_streaming arms internally; do NOT call AcquisitionStart separately.
+        self.cam_handle.start_streaming(handler=self._async_handler, buffer_count=buf_cnt)
+
+        def _gen():
+            while self.is_recording:
+                try:
+                    item = self._async_queue.get(timeout=1.0)
+                    yield item
+                except queue.Empty:
+                    continue
 
         self._gen = _gen()
 
@@ -523,34 +682,65 @@ class AVTCam(GenericCam):
                 self.apply_params()
         except Exception:
             pass
-        # Clean arm
-        try:
-            if hasattr(self.cam_handle, "AcquisitionStart"):
-                self.cam_handle.AcquisitionStart.run()
-                self._v(f"[AVT {self.cam_id}] AcquisitionStart run")
-        except Exception as e:
-            self._v(f"[AVT {self.cam_id}] AcquisitionStart error: {e}")
-        self._start_stream()
+
+        if self._is_async_mode():
+            # Async streaming manages acquisition lifecycle internally
+            self._start_stream_async()
+        else:
+            # Sync path: optionally run AcquisitionStart; then poll get_frame
+            try:
+                if hasattr(self.cam_handle, "AcquisitionStart"):
+                    self.cam_handle.AcquisitionStart.run()
+                    self._v(f"[AVT {self.cam_id}] AcquisitionStart run")
+            except Exception as e:
+                self._v(f"[AVT {self.cam_id}] AcquisitionStart error: {e}")
+            self._start_stream_sync()
 
     def stop(self):
         """Disarm/stop acquisition and generator."""
+        was_async = self._is_async_mode()
         self.is_recording = False
         self._gen = None
 
-        # Abort any pending wait and then stop acquisition; this truly stops "listening".
-        try:
-            if hasattr(self.cam_handle, "AcquisitionAbort"):
-                self.cam_handle.AcquisitionAbort.run()
-                self._v(f"[AVT {self.cam_id}] AcquisitionAbort run")
-        except Exception as e:
-            self._v(f"[AVT {self.cam_id}] AcquisitionAbort error: {e}")
+        if was_async:
+            # Stop async stream first (this also stops acquisition)
+            try:
+                if hasattr(self.cam_handle, "stop_streaming"):
+                    self.cam_handle.stop_streaming()
+                    self._v(f"[AVT {self.cam_id}] stop_streaming done")
+            except Exception as e:
+                self._v(f"[AVT {self.cam_id}] stop_streaming error: {e}")
+            # Drain and drop queue
+            try:
+                if self._async_queue is not None:
+                    while not self._async_queue.empty():
+                        try:
+                            self._async_queue.get_nowait()
+                        except Exception:
+                            break
+            except Exception:
+                pass
+            self._async_queue = None
+            self._async_handler = None
+            self._async_lock = None
+        else:
+            # SYNC: Abort any pending wait and then stop acquisition
+            try:
+                if hasattr(self.cam_handle, "AcquisitionAbort"):
+                    self.cam_handle.AcquisitionAbort.run()
+                    self._v(f"[AVT {self.cam_id}] AcquisitionAbort run")
+            except Exception as e:
+                self._v(f"[AVT {self.cam_id}] AcquisitionAbort error: {e}")
 
-        try:
-            if hasattr(self.cam_handle, "AcquisitionStop"):
-                self.cam_handle.AcquisitionStop.run()
-                self._v(f"[AVT {self.cam_id}] AcquisitionStop run")
-        except Exception as e:
-            self._v(f"[AVT {self.cam_id}] AcquisitionStop error: {e}")
+            try:
+                if hasattr(self.cam_handle, "AcquisitionStop"):
+                    self.cam_handle.AcquisitionStop.run()
+                    self._v(f"[AVT {self.cam_id}] AcquisitionStop run")
+            except Exception as e:
+                self._v(f"[AVT {self.cam_id}] AcquisitionStop error: {e}")
+
+        # Free SHM pool
+        self._free_pool()
 
         self._v(f"[AVT {self.cam_id}] stream stopped.")
 
@@ -589,7 +779,8 @@ class AVTCam(GenericCam):
         # 2) If not triggered, take a probe frame (requires acquisition running on some models)
         if not self._triggered:
             try:
-                f = self.cam_handle.get_frame(timeout_ms=self.timeout)
+                probe_timeout = min(int(self.timeout), 250)
+                f = self.cam_handle.get_frame(timeout_ms=probe_timeout)
             except VmbTimeout:
                 self._v(f"[AVT {self.cam_id}] _init_format timeout")
                 return
@@ -607,16 +798,3 @@ class AVTCam(GenericCam):
                         f"n_chan={self.format['n_chan']} dtype={self.format['dtype']}")
             except Exception as e:
                 self._v(f"[AVT {self.cam_id}] _init_format error: {e}")
-
-    def fire_software_trigger(self):
-        try:
-            if hasattr(self.cam_handle, "TriggerSoftware"):
-                self.cam_handle.TriggerSoftware.run()
-                self._v(f"[AVT {self.cam_id}] Software trigger fired successfully")
-                return True
-            else:
-                self._v(f"[AVT {self.cam_id}] No TriggerSoftware feature available")
-                return False
-        except Exception as e:
-            self._v(f"[AVT {self.cam_id}] Software trigger failed: {e}")
-            return False

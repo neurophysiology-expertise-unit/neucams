@@ -27,27 +27,27 @@
             }
         },
         {
-            "description": "avt1",
+            "description": "MakoAVT",
             "driver": "avt",
             "serial_number": "50-0537068788",
             "params": {
-                "frame_rate": 30,
-                "trigger_mode": "Off",
-                "trigger_source": "Line1"
+              "frame_rate": 100,
+              "exposure_auto": "Off",
+              "exposure": 500,
+              "trigger_mode": "Off",
+              "trigger_source": "Line1",
+              "sync_out_source": "FrameReadout",
+              "sync_out_levels": 1,
+              "sync_out_selector": "SyncOut2",
+              "sync_out_polarity": "Normal",
+              "stream_constrain": false,
+              "asynchronous": true,
+              "verbose": true
             }
-        }
-    ],
-    "recorder_params": {
-        "compress": 0,
-        "data_folder": "I:\\mouselab\\data",
-        "experiment_folder": "EXP_TEST",
-        "recorder": "opencv",
-        "recorder_sleep_time":0.05
-    },
-    "server_params": {
-        "server": "udp",
-        "server_ip": "10.86.1.239",
-        "server_port": 33330,
-        "server_refresh_time": 30
-    }
+          }
+        ],
+    
+        "recorder_params": { "compress": 0, "data_folder": "I:\\mouselab\\data",
+          "experiment_folder": "triptest", "recorder": "tiff", "recorder_sleep_time": 0.05 }
+    
 } 

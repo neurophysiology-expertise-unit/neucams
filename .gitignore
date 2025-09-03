@@ -54,9 +54,11 @@ Thumbs.db
 *.wmv
 
 # PyInstaller build artifacts
-build_neucams/build/
-build_neucams/dist/
+build_neucams/files/**
+build_neucams/dist/**
+build_neucams/build/**
 build_neucams/payload.zip
+dist/**
 
 # Large DLLs and binaries (unless you need them for the build)
 build_neucams/_internal/

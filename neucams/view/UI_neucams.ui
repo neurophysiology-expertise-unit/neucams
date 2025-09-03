@@ -52,6 +52,12 @@
    </widget>
    <addaction name="menuView"/>
   </widget>
+  <widget class="QToolBar" name="mainToolBar">
+   <property name="windowTitle">
+    <string>Main Toolbar</string>
+   </property>
+   <addaction name="actionMasterStartStop"/>
+  </widget>
   <widget class="QStatusBar" name="statusbar"/>
   <action name="actionCascade">
    <property name="text">
@@ -73,6 +79,15 @@
     <string>Tabbed View</string>
    </property>
   </action>
+  <action name="actionMasterStartStop">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Master Start</string>
+   </property>
+  </action>
  </widget>
  <resources/>
+ <connections/>
 </ui> 
