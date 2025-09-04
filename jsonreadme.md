@@ -1,6 +1,6 @@
 # NeuCams — Configure Cameras via JSON
 
-You configure **what matters** through a small, consistent JSON. Every key is **lowercase snake\_case**. Internally we translate to each SDK’s naming so **you don’t have to**. We intentionally expose a **curated subset** of features—because dumping 100 SDK knobs into JSON is pain and bugs.
+You configure **what matters** through a small, consistent JSON. Every key is **lowercase snake\_case**. Internally we translate to each SDK's naming so **you don't have to**. We intentionally expose a **curated subset** of features—because dumping 100 SDK knobs into JSON is pain and bugs.
 
 This README shows:
 
@@ -8,6 +8,7 @@ This README shows:
 * The **exact, supported parameters** per camera (names + defaults pulled from the code you shared).
 * **1‑line explanations** for each param.
 * **Per‑camera JSON examples** that match what the drivers accept.
+* **Camera-specific behavior notes** and limitations.
 
 > Scope: This document focuses on camera params. Other sections (e.g., `recorder_params`, `server_params`) are out of scope here.
 
@@ -22,7 +23,7 @@ Each camera lives inside the top‑level `"cams"` list:
   "cams": [
     {
       "description": "friendly-name",
-      "driver": "avt | hamamatsu | genicam",
+      "driver": "avt | hamamatsu | genicam | opencv",
       "serial_number": "camera-serial",
       "params": { /* camera-specific keys below */ }
     }
@@ -92,6 +93,7 @@ Each camera lives inside the top‑level `"cams"` list:
   2. computes `StreamBytesPerSecond` with \~25% headroom,
   3. sets `AcquisitionFrameRateAbs` → **stable FPS** (if the link can carry it).
 * Ensure `exposure_us ≤ 1e6 / frame_rate` in free‑run.
+* **Full trigger support** with all standard trigger modes, sources, and activations.
 
 ### Minimal AVT JSON
 
@@ -139,6 +141,10 @@ Each camera lives inside the top‑level `"cams"` list:
 
 * With `trigger_source: "INTERNAL"`, achievable FPS is **capped by exposure + readout**; driver logs a ceiling estimate.
 * `gain`/`gain_auto` are logged as ignored on this Orca model.
+* **Limited trigger support** via the `trigger_source` parameter:
+  - `"INTERNAL"` - Free-run mode
+  - `"EXTERNAL"` - External hardware trigger
+  - `"SOFTWARE"` - Software trigger
 
 ### Minimal Hamamatsu JSON
 
@@ -163,34 +169,48 @@ Each camera lives inside the top‑level `"cams"` list:
 
 ## GenICam (e.g., Teledyne Dalsa) — `driver: "genicam"`
 
-*Harvester backend; clean subset with optional trigger keys.*
+*Harvester backend; **IMPORTANT: Trigger support is automatically disabled** for most Dalsa cameras.*
+
+### ⚠️ **Trigger Behavior (Important)**
+
+**Dalsa cameras are completely excluded from trigger operations:**
+- **Global trigger control** via the Master Trigger checkbox skips Dalsa cameras entirely
+- **Automatic detection**: The driver tests for `TriggerMode`, `TriggerSelector`, and `TriggerSource` nodes
+- **Fallback to free-run**: If trigger nodes are missing, the camera automatically operates in free-run mode
+- **Log messages**: You'll see `"Skipping trigger setting for Dalsa camera 'camera_name' - not supported"`
+
+This is **hardcoded** in:
+1. `neucams/view/widgets.py` - `_broadcast_trigger_setting()` method skips `driver: "genicam"`
+2. `neucams/cams/genicam.py` - `apply_params()` method detects trigger support and forces `trigger_mode: "off"`
 
 ### Exposed parameters (and defaults)
 
 | Key                   |        Default | What it does                                                       |
 | --------------------- | -------------: | ------------------------------------------------------------------ |
 | **exposure**          |        `29000` | Exposure time in **μs**.                                           |
-| **frame\_rate**       |           `30` | Acquisition frame rate (free-run).                                 |
+| **frame\_rate**       |           `30` | Acquisition frame rate (free-run only).                            |
 | **gain**              |            `8` | Camera gain value.                                                 |
 | **gain\_auto**        |        `false` | Auto gain (`true` → `"Once"`, `false` → `"Off"`).                  |
 | **acquisition\_mode** | `"Continuous"` | `"Continuous"` or `"MultiFrame"`.                                  |
 | **n\_frames**         |            `1` | Frames to grab in `"MultiFrame"`.                                  |
-| **triggered**         |        `false` | Shortcut boolean for trigger mode (`true` ≈ `trigger_mode: "On"`). |
 
-### Also recognized trigger keys (normalized & applied when triggering)
+### Trigger parameters (present but typically ignored)
 
-> These are **accepted by the driver** (even though not listed in its `exposed_params` array):
+> These parameters are **defined in the driver** but will be **automatically disabled** for most Dalsa cameras:
 
-| Key                     |        Default | What it does                               |
-| ----------------------- | -------------: | ------------------------------------------ |
-| **trigger\_mode**       |        `"Off"` | `"Off"` free-run, `"On"` external trigger. |
-| **trigger\_source**     |      `"Line1"` | Which hardware line triggers frames.       |
-| **trigger\_activation** | `"RisingEdge"` | Trigger edge selection.                    |
+| Key                     |        Default | What it does                               | Status |
+| ----------------------- | -------------: | ------------------------------------------ | ------ |
+| **trigger\_mode**       |        `"off"` | `"off"` free-run, `"on"` external trigger. | ⚠️ Auto-disabled |
+| **trigger\_source**     |      `"line1"` | Which hardware line triggers frames.       | ⚠️ Auto-disabled |
+| **trigger\_activation** | `"rising_edge"` | Trigger edge selection.                    | ⚠️ Auto-disabled |
+| **trigger\_selector**   | `"frame_start"` | Trigger selector mode.                     | ⚠️ Auto-disabled |
 
 **Notes**
 
-* If `triggered: true` or `trigger_mode: "On"`, the camera **waits for triggers**; `frame_rate` becomes a cap or is ignored depending on model.
-* Driver sets sane GenICam defaults under the hood (`TriggerSelector="FrameStart"`, TTL level, no debouncing).
+* **Free-run mode only**: Dalsa cameras will always operate in free-run mode regardless of trigger settings
+* **Parameter validation**: If `trigger_mode: "on"` is specified, it will be automatically changed to `"off"`  
+* **Global trigger immunity**: The Master Trigger checkbox in the UI has no effect on Dalsa cameras
+* You can safely include trigger parameters in your JSON - they will be ignored gracefully
 
 ### Minimal GenICam JSON
 
@@ -205,22 +225,88 @@ Each camera lives inside the top‑level `"cams"` list:
     "gain": 8,
     "gain_auto": false,
     "acquisition_mode": "Continuous",
-    "n_frames": 1,
-    "trigger_mode": "Off",
-    "trigger_source": "Line1",
-    "trigger_activation": "RisingEdge"
+    "n_frames": 1
   }
 }
 ```
 
 ---
 
+## OpenCV (Webcams/Facecams) — `driver: "opencv"`
+
+*OpenCV backend for USB webcams, built-in laptop cameras, and external cameras.*
+
+### Supported parameters (and defaults)
+
+| Key                |  Default | What it does                                           |
+| ------------------ | -------: | ------------------------------------------------------ |
+| **frame\_rate**    |   `30.0` | Target capture rate in FPS.                            |
+| **width**          |    `640` | Capture width in pixels.                               |
+| **height**         |    `480` | Capture height in pixels.                              |
+| **auto\_exposure** |   `true` | Enable automatic exposure control.                     |
+| **exposure**       |    `0.5` | Manual exposure (0.0-1.0) when auto_exposure is off.   |
+| **brightness**     |    `0.5` | Brightness adjustment (0.0-1.0).                       |
+| **contrast**       |    `0.5` | Contrast control (0.0-1.0).                            |
+| **saturation**     |    `0.5` | Color saturation (0.0-1.0).                            |
+| **hue**            |    `0.5` | Hue adjustment (0.0-1.0).                              |
+| **gain**           |    `0.5` | Camera gain (0.0-1.0).                                 |
+
+**Notes**
+
+* **Camera IDs**: Use `"id": 0` for built-in cameras, `"id": 1, 2, 3...` for external USB cameras
+* **Limited trigger support**: Primarily free-run mode only
+* **Real-time preview**: Full compatibility with NeuCams UI and recording systems
+* **Multiple cameras**: Can run multiple OpenCV cameras simultaneously
+* **Auto-detection**: Parameters are applied if supported by the camera hardware
+
+### Minimal OpenCV JSON
+
+```json
+{
+  "description": "facecam",
+  "driver": "opencv",
+  "id": 0,
+  "params": {
+    "frame_rate": 30,
+    "width": 1280,
+    "height": 720,
+    "auto_exposure": true,
+    "brightness": 0.5,
+    "contrast": 0.5
+  }
+}
+```
+
+---
+
+## File Saving Behavior
+
+**Path Setting**: The save folder path is set via the UI run name controls or UDP commands. Once set, it persists for all subsequent acquisitions until changed.
+
+**File Naming**: Files are automatically numbered with the pattern `YYMMDD_RunNumber_FileIndex.extension` where:
+- `YYMMDD` is the current date
+- `RunNumber` increments each time recording starts  
+- `FileIndex` starts at 1 for each new file in the same run
+
+**Frame Count Reset**: When you change the save name/location and start a new recording, the frame counter resets to 0 with a log message:
+```
+Frame count reset: 1250 frames reset to 0 for new save location: C:/data/camera1/session1/run2.tif
+```
+
+**Rollover**: For TIFF files, a new file is created every 256 frames by default (configurable via `frames_per_file` parameter).
+
+**Path Display**: All paths are displayed with forward slashes (`/`) for consistency, regardless of user input format.
+
+---
+
 ## Gotchas & tips
 
-* **Always snake\_case** in JSON. Don’t use SDK names like `AcquisitionFrameRateAbs`—use `frame_rate`.
+* **Always snake\_case** in JSON. Don't use SDK names like `AcquisitionFrameRateAbs`—use `frame_rate`.
 * **AVT deterministic FPS** depends on bandwidth. Weak links → drops (honest signal to fix NIC/switch/jumbos).
 * **Hamamatsu gain**: present for symmetry, ignored on your Orca model.
-* **require\_full\_access (AVT)**: set to `true` if you’d rather fail than open read‑only.
+* **Dalsa triggering**: **Completely disabled** - all Dalsa cameras operate in free-run mode only.
+* **OpenCV camera IDs**: Test different IDs (0, 1, 2...) to find your cameras.
+* **require\_full\_access (AVT)**: set to `true` if you'd rather fail than open read‑only.
 * **Verbose**: AVT honors `NEUCAMS_VERBOSE=1/true` if `verbose` is `null`/unset.
 
 ---

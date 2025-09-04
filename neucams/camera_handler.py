@@ -9,6 +9,7 @@ import json
 from neucams.file_writer import BinaryWriter, TiffWriter, FFMPEGWriter, OpenCVWriter
 from neucams.utils import display, resolve_cam_id_by_serial
 from importlib import import_module
+import os
 
 
 def clear_queue(my_queue):
@@ -24,6 +25,7 @@ class CameraFactory:
         'avt': ('cams.avt_cam', 'AVTCam'),
         'genicam': ('cams.genicam', 'GenICam'),
         'hamamatsu': ('cams.hamamatsu_cam', 'HamamatsuCam'),
+        'opencv': ('cams.opencv_cam', 'OpenCVCam'),
     }
 
     @staticmethod
@@ -62,6 +64,8 @@ class CameraHandler(Process):
         self.cam_param_InQ = Queue()
         self.cam_param_OutQ = Queue()
         self.cam_param_get_flag = Event()
+        # Capability flags
+        self.trigger_supported = Value('b', False)
         
         self.handler_closed = Event()
         
@@ -120,6 +124,21 @@ class CameraHandler(Process):
             self.frame = Array(cdtype, np.zeros([height, width, n_chan], dtype=dtype).ravel())
             self.format = {'dtype': dtype, 'height': height, 'width': width, 'n_chan': n_chan, 'cdtype': cdtype}
             self._init_buffer()
+            # Detect trigger support best-effort once during init
+            try:
+                supported = False
+                # AVT supports trigger; GenICam supports if node exists
+                drv = str(self.cam_dict.get('driver', '')).lower()
+                if drv == 'avt':
+                    supported = True
+                elif drv == 'genicam':
+                    nm = getattr(cam, 'features', None)
+                    supported = bool(nm and hasattr(nm, 'TriggerMode'))
+                elif drv == 'hamamatsu':
+                    supported = False
+                self.trigger_supported.value = bool(supported)
+            except Exception:
+                self.trigger_supported.value = False
             return True
 
 
@@ -129,23 +148,21 @@ class CameraHandler(Process):
                         .reshape([self.format['height'], self.format['width'], self.format['n_chan']])
                         
     def run(self):
-        
-        if not hasattr(self, "frame"):
-            ok = self._init_framebuffer()
-            if not ok:            # Let _init_framebuffer() return True/False
-                display("Camera not ready—handler exiting.", level="error")
-                self.handler_closed.set()
-                return   
-        
-        self._init_buffer()
-        with self._open_cam() as cam:
-            self.cam = cam
-            with self._open_writer() as writer:
-                self.writer = writer
+        try:
+            if not hasattr(self, "frame"):
+                ok = self._init_framebuffer()
+                if not ok:            # Let _init_framebuffer() return True/False
+                    display("Camera not ready—handler exiting.", level="error")
+                    return
+
+            self._init_buffer()
+            with self._open_cam() as cam:
+                self.cam = cam
+                self.writer = None  # Initialize writer as None - will be created when recording starts
                 while not self.close_event.is_set():
                     self._process_queues()
                     self.init_run()
-                    
+
                     display(f'[{cam.name} {cam.cam_id}] waiting for trigger.')
                     self.wait_for_trigger()
                     if self.start_trigger.is_set():
@@ -161,7 +178,14 @@ class CameraHandler(Process):
                             shm_name, shape, dtype = frame
                             # 1) If recording, hand the SHM tuple to the writer FIRST (writer will manage unlink)
                             if self.saving.is_set():
-                                writer.save((shm_name, shape, dtype), metadata)
+                                if self.writer is None:
+                                    try:
+                                        self.writer = self._open_writer()
+                                    except ValueError as e:
+                                        display(f"Cannot start recording: {e}", level='error')
+                                        self.saving.clear()  # Turn off saving since we can't create writer
+                                        continue
+                                self.writer.save((shm_name, shape, dtype), metadata)
                                 handled_shm_in_writer = True
                             # 2) For display, copy from SHM into our shared framebuffer
                             from neucams.file_writer import shm_frame as _shm_frame
@@ -183,41 +207,49 @@ class CameraHandler(Process):
                         # Non-SHM or post-copy handling
                         if frame is not None:
                             if self.saving.is_set() and not handled_shm_in_writer:
-                                writer.save(frame, metadata)
+                                if self.writer is None:
+                                    try:
+                                        self.writer = self._open_writer()
+                                    except ValueError as e:
+                                        display(f"Cannot start recording: {e}", level='error')
+                                        self.saving.clear()  # Turn off saving since we can't create writer
+                                        continue
+                                self.writer.save(frame, metadata)
                             self._update(frame, metadata)
                         elif metadata == "stop":
                             self.stop_trigger.set()
                     display(f'[{cam.name} {cam.cam_id}] stop trigger set.')
                     self.close_run()
-        self.handler_closed.set()
+        except Exception as e:
+            display(f"Camera handler '{self.cam_dict.get('description', 'unknown')}' crashed: {e}", level='error')
+            import traceback
+            traceback.print_exc()
+        finally:
+            display(f"Closing handler for camera '{self.cam_dict.get('description', 'unknown')}'.")
+            self.handler_closed.set()
     
     def _open_writer(self):
         writer_type = self.writer_dict.get('recorder', 'opencv')
         writers = {'opencv': OpenCVWriter, 'binary': BinaryWriter, 'tiff': TiffWriter, 'ffmpeg': FFMPEGWriter}
         writer_cls = writers[writer_type]
-        # Only consider frames_per_file when using TIFF. Support keys: tiff_size
+
         cfg = {}
         if writer_type == 'tiff':
             tiff_fpf = (self.writer_dict.get('tiff_size'))
             if isinstance(tiff_fpf, int) and tiff_fpf > 0:
                 cfg['frames_per_file'] = tiff_fpf
-        # Build folder as: data_folder/experiment_folder/<camera_description>
-        data_folder = self.writer_dict.get('data_folder', None)
-        if not data_folder or not isdir(data_folder):
-            fallback = join(expanduser('~'), 'data')
-            if data_folder:
-                display(f"Configured data_folder '{data_folder}' not found. Falling back to '{fallback}'.", level='warning')
-            data_folder = fallback
-        folder = join(data_folder, self.writer_dict.get('experiment_folder', ''), self.cam_dict['description'])
-        self.set_folder_path(folder)
+
+        # ---- Path logic: UI/UDP is source of truth ----
+        folder = self.get_folder_path()
+        if not folder:
+            raise ValueError("No save folder set. Please set a save path before starting recording.")
+
         cfg['filepath'] = self.get_new_filepath()
 
         import inspect
         sig = inspect.signature(writer_cls)
-        # Pass camera-derived frame rate if the writer supports it
         if 'frame_rate' in sig.parameters:
             cfg['frame_rate'] = self.cam.params.get('frame_rate', None)
-        # Map 'compress' -> 'compression' if writer supports 'compression'
         if 'compression' in sig.parameters:
             if 'compress' in self.writer_dict:
                 cfg['compression'] = self.writer_dict.get('compress')
@@ -255,6 +287,10 @@ class CameraHandler(Process):
         return filepath
         
     def _open_cam(self):
+        """
+        Build and return the actual camera instance based on self.cam_dict.
+        This is a CameraHandler helper (not a camera method).
+        """
         cam_dict_copy = self.cam_dict.copy()
         cam_type = cam_dict_copy.pop('driver', None)
         if cam_type is None:
@@ -263,12 +299,14 @@ class CameraHandler(Process):
 
         serial_number = cam_dict_copy.get('serial_number', None)
 
+        # Decide cam_id policy per driver
         if cam_type == 'hamamatsu':
-            cam_id = None  # resolve by serial in the driver
+            cam_id = None  # resolved by serial in the driver
         elif cam_type == 'avt':
-            # Let the AVT driver resolve by serial itself to avoid extra vmbpy startups here
+            # Let the AVT driver resolve by serial itself; keep optional 'id' if provided
             cam_id = cam_dict_copy.get('id', None)
         else:
+            # genicam: resolve by serial -> cam_id (or fall back to 'id')
             cam_id = (resolve_cam_id_by_serial(cam_type, serial_number)
                     if serial_number is not None else cam_dict_copy.get('id', None))
 
@@ -286,7 +324,9 @@ class CameraHandler(Process):
     def init_run(self):
         self.frame_nr = 0
         self.lastframeid = -1
-        self.writer.set_filepath(self.get_new_filepath())
+        # Only set filepath if writer exists (will be set when recording starts)
+        if self.writer is not None:
+            self.writer.set_filepath(self.get_new_filepath())
         self.camera_ready.set()
     
     def close_run(self):
@@ -296,6 +336,14 @@ class CameraHandler(Process):
                 self.cam.stop()
         except Exception:
             pass
+
+        # Close writer if it was created
+        if hasattr(self, 'writer') and self.writer is not None:
+            try:
+                self.writer.close()
+                self.writer = None
+            except Exception:
+                pass
 
         self.start_trigger.clear()
         self.is_acquisition_done.set()
@@ -322,6 +370,13 @@ class CameraHandler(Process):
             self._process_queues()
             time.sleep(0.001)
         self.is_running.set()
+
+        # Apply any pending/staged camera parameters now before starting acquisition
+        try:
+            if hasattr(self.cam, "apply_params") and callable(self.cam.apply_params):
+                self.cam.apply_params()
+        except Exception as e:
+            display(f"Failed to apply camera params before start: {e}", level='error')
 
         # --- make sure we're disarmed before arming again ---
         try:
@@ -403,12 +458,23 @@ class CameraHandler(Process):
                     self.cam.set_param(param, val)
                     params_to_set = True
 
+                elif command == 'set_folder' and len(message) == 2:
+                    # Update folder path immediately; if writer exists, refresh filepath
+                    _, folder_path = message
+                    try:
+                        self.set_folder_path(folder_path)
+                        if hasattr(self, 'writer') and self.writer is not None:
+                            self.writer.set_filepath(self.get_new_filepath())
+                    except Exception:
+                        pass
+
             except queue.Empty:
                 break  # No more messages
         
         # If any 'set' commands were processed, apply them in one batch
         if params_to_set:
-            self.cam.apply_params()
+            pass
+            # self.cam.apply_params() #-- DEFERRED until acquisition start
 
     def set_cam_param(self, param : str, val):
         """Puts a ('set', param, value) command on the input queue."""
@@ -446,11 +512,18 @@ class CameraHandler(Process):
         self.saving.clear()
     
     def start_acquisition(self):
+        # Wait briefly for readiness to avoid race with init_run()
+        if not self.camera_ready.is_set():
+            t0 = time.time()
+            while time.time() - t0 < 1.5:
+                if self.camera_ready.is_set():
+                    break
+                time.sleep(0.01)
         if self.camera_ready.is_set():
             self.is_acquisition_done.clear()
             self.start_trigger.set()
             return True
-        print(f"Could not start acquisition, camera {self.cam_dict['description']} not ready", flush=True)
+        display(f"Could not start acquisition, camera {self.cam_dict['description']} not ready", level='warning')
         return False
         
     def stop_acquisition(self):

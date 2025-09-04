@@ -27,7 +27,7 @@ DEFAULT_SERVER_PARAMS = {
 DEFAULT_RECORDER_PARAMS = {
                             'recorder' : 'opencv',
                             'data_folder': 'C:\\Users\\User\\data',
-                            'experiment_folder': 'EXP_TEST',
+                            # 'experiment_folder' is optional; runtime defaults to 'test' if missing
                             'frames_per_file': 256,
                             'compress': 0
                           }
@@ -132,7 +132,7 @@ def check_preferences(pref, valid_drivers=None):
                     f"ERROR: Invalid driver '{driver}' in camera '{cam.get('description', '?')}'. "
                     f"Valid drivers are: {', '.join(valid_drivers)}.\n"
                 )
-    required_recorder_keys = ['data_folder', 'experiment_folder']
+    required_recorder_keys = ['data_folder']
     if not "recorder_params" in pref:
         error_messages += f"ERROR: there needs to be a recorder_params entry, with at least the following required keys: {', '.join(required_recorder_keys)}.\n"
     else:

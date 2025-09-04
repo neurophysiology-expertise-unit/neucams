@@ -1,98 +1,237 @@
 import time
 import cv2
 import numpy as np
-from multiprocessing import Event
 from .generic_cam import GenericCam
 from ..utils import display
 
 class OpenCVCam(GenericCam):
-    """OpenCV camera; some functionality limited (like hardware triggers)
+    """OpenCV camera driver for webcams, facecams, and USB cameras
+    
+    Supports standard USB webcams, built-in laptop cameras, and external USB cameras.
+    Limited hardware trigger support - primarily free-run mode.
     """
-    def __init__(self,
-                 cam_id = None,
-                 outQ = None,
-                 frame_rate = 0.,
-                 triggered = Event(),
-                 recorderpar = None,
-                 **kwargs):
-
-        super().__init__(name = 'OpenCV', cam_id = cam_id, outQ = outQ, 
-                         recorderpar = recorderpar, 
-                         params = {'frame_rate': float(frame_rate)})
-        
-        self._init_framebuffer()
-        
-        self.triggered = triggered
-        if self.triggered.is_set():
-            display('[OpenCV {0}] Triggered mode ON.'.format(self.cam_id))
-            self.triggerSource = triggerSource
     
-    def _init_framebuffer(self):
-        self.cam = cv2.VideoCapture(self.cam_id)
-        self.set_cam_settings()
-        ret_val, frame = self.cam.read()
-        if ret_val:
-            self.format['height'] = frame.shape[0]
-            self.format['width'] = frame.shape[1]
-            if len(frame.shape) > 2:
-                self.format['n_chan'] = frame.shape[2]
-            self.format['dtype'] = frame.dtype
-            super()._init_framebuffer()
+    def __init__(self, cam_id=None, params=None, **kwargs):
+        # Default cam_id to 0 if not specified (first available camera)
+        if cam_id is None:
+            cam_id = 0
+            
+        # Convert string cam_id to int if needed
+        try:
+            cam_id = int(cam_id)
+        except (ValueError, TypeError):
+            display(f"Warning: Invalid cam_id '{cam_id}', defaulting to 0", level='warning')
+            cam_id = 0
+            
+        super().__init__(
+            name='OpenCV', 
+            cam_id=cam_id, 
+            params=params or {}
+        )
+        
+        # Set default parameters
+        default_params = {
+            'frame_rate': 30.0,
+            'width': 640,
+            'height': 480,
+            'auto_exposure': True,
+            'exposure': 0.5,  # 0.0 to 1.0 range
+            'brightness': 0.5,
+            'contrast': 0.5,
+            'saturation': 0.5,
+            'hue': 0.5,
+            'gain': 0.5
+        }
+        
+        # Merge with user params
+        for key, value in default_params.items():
+            if key not in self.params:
+                self.params[key] = value
+                
+        # Set exposed parameters that can be controlled from UI
+        self.exposed_params = [
+            'frame_rate', 'width', 'height', 'auto_exposure', 'exposure',
+            'brightness', 'contrast', 'saturation', 'hue', 'gain'
+        ]
+                
+        # Initialize the camera to get format information
+        self._init_camera_format()
+        
+    def _init_camera_format(self):
+        """Initialize camera and determine format information"""
+        cap = cv2.VideoCapture(self.cam_id)
+        if not cap.isOpened():
+            display(f"ERROR: Could not open OpenCV camera {self.cam_id}", level='error')
+            self.format = {'width': 640, 'height': 480, 'dtype': np.uint8, 'n_chan': 3}
+            cap.release()
+            return False
+            
+        # Try to set desired resolution
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.params.get('width', 640))
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.params.get('height', 480))
+        cap.set(cv2.CAP_PROP_FPS, self.params.get('frame_rate', 30))
+        
+        # Read a test frame to get actual format
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            # OpenCV typically returns BGR, we'll convert to RGB in image()
+            height, width = frame.shape[:2]
+            n_chan = 3 if len(frame.shape) == 3 else 1
+            
+            self.format = {
+                'width': width,
+                'height': height, 
+                'dtype': np.uint8,  # OpenCV typically uses uint8
+                'n_chan': n_chan
+            }
+            
+            display(f"[OpenCV {self.cam_id}] Initialized: {width}x{height}, {n_chan} channels")
         else:
-            display('ERROR: failed to read frame, framebuffer not initialized')
-        self.cam.release()
-        self.cam = None
-    
-    def _init_controls(self):
-        self.ctrevents = dict(framerate=dict(function = 'set_framerate',
-                                             widget = 'float',
-                                             variable = 'frame_rate',
-                                             units = 'fps',
-                                             type = 'float',
-                                             min = 0.0,
-                                             max = 1000,
-                                             step = 0.1))
-    
-    def set_cam_settings(self):
-        self.set_framerate(self.params['frame_rate'])
+            display(f"ERROR: Could not read test frame from OpenCV camera {self.cam_id}", level='error')
+            self.format = {'width': 640, 'height': 480, 'dtype': np.uint8, 'n_chan': 3}
+            
+        cap.release()
+        return ret
         
-    def set_framerate(self,framerate = 30.):
-        '''Set frame rate in seconds'''
-        self.frame_rate = float(framerate)
-        if not self.cam is None:
-            if not float(self.frame_rate) == float(0):
-                self.cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
-                self.cam.set(cv2.CAP_PROP_EXPOSURE,1./self.frame_rate)
-                self.cam.set(cv2.CAP_PROP_FPS,self.frame_rate)
-            else:
-                display('[OpenCV] Setting auto exposure.')
-                self.cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
-                self.cam.set(cv2.CAP_PROP_EXPOSURE, 100)
-
-            if self.cam_is_running:
-                self.stop_trigger.set()
-                self.start_trigger.set()
-
-            display('[OpenCV {0}] Set frame_rate to: {1}.'.format(self.cam_id,
-                                                                  self.frame_rate))
-
-    def _cam_init(self):
-        self.nframes.value = 0
-        self.lastframeid = -1
-        self.cam = cv2.VideoCapture(self.cam_id)
-        self.set_framerate(self.frame_rate)
-        self.camera_ready.set()
+    def is_connected(self):
+        """Check if camera is available"""
+        cap = cv2.VideoCapture(self.cam_id)
+        is_open = cap.isOpened()
+        if is_open:
+            # Try to read a frame to make sure it's actually working
+            ret, _ = cap.read()
+            is_open = ret
+        cap.release()
+        return is_open
         
-    def _cam_loop(self):
-        frameID = self.nframes.value
-        self.nframes.value = frameID + 1
-        ret_val, frame = self.cam.read()
-        if not ret_val:
-            return ret_val, None, (None,None)
+    def open(self):
+        """Open camera for acquisition"""
+        self.cap = cv2.VideoCapture(self.cam_id)
+        if not self.cap.isOpened():
+            display(f"ERROR: Failed to open OpenCV camera {self.cam_id}", level='error')
+            return False
+            
+        # Apply camera settings
+        self._apply_settings()
+        display(f"[OpenCV {self.cam_id}] Camera opened and configured")
+        return True
+        
+    def close(self):
+        """Close camera"""
+        if hasattr(self, 'cap') and self.cap is not None:
+            self.cap.release()
+            self.cap = None
+        display(f"[OpenCV {self.cam_id}] Camera closed")
+        
+    def start(self):
+        """Start acquisition - for OpenCV this is mostly a no-op"""
+        if not hasattr(self, 'cap') or self.cap is None:
+            self.open()
+        display(f"[OpenCV {self.cam_id}] Acquisition started")
+        
+    def stop(self):
+        """Stop acquisition"""
+        # For OpenCV, we don't need to explicitly stop, just note it
+        display(f"[OpenCV {self.cam_id}] Acquisition stopped")
+        
+    def image(self):
+        """Capture and return next frame"""
+        if not hasattr(self, 'cap') or self.cap is None:
+            return None, "camera not opened"
+            
+        ret, frame = self.cap.read()
+        if not ret or frame is None:
+            return None, "failed to capture frame"
+            
+        # Convert BGR to RGB for consistency with other cameras
+        if len(frame.shape) == 3 and frame.shape[2] == 3:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+        # Generate metadata (frame ID and timestamp)
+        frame_id = getattr(self, '_frame_counter', 0)
+        self._frame_counter = frame_id + 1
         timestamp = time.time()
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        return ret_val, frame,(frameID,timestamp)
-
-    def _cam_close(self):
-        self.cam.release()
-        display('[OpenCV {0}] - Stopped acquisition.'.format(self.cam_id))
+        
+        return frame, (frame_id, timestamp)
+        
+    def _apply_settings(self):
+        """Apply camera parameter settings"""
+        if not hasattr(self, 'cap') or self.cap is None:
+            return
+            
+        # Frame rate
+        fps = float(self.params.get('frame_rate', 30))
+        self.cap.set(cv2.CAP_PROP_FPS, fps)
+        
+        # Resolution 
+        width = int(self.params.get('width', 640))
+        height = int(self.params.get('height', 480))
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        
+        # Exposure settings
+        auto_exposure = self.params.get('auto_exposure', True)
+        if auto_exposure:
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)  # Auto exposure on
+        else:
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # Manual exposure
+            exposure = float(self.params.get('exposure', 0.5))
+            self.cap.set(cv2.CAP_PROP_EXPOSURE, exposure)
+            
+        # Other settings (if supported by camera)
+        settings_map = {
+            'brightness': cv2.CAP_PROP_BRIGHTNESS,
+            'contrast': cv2.CAP_PROP_CONTRAST, 
+            'saturation': cv2.CAP_PROP_SATURATION,
+            'hue': cv2.CAP_PROP_HUE,
+            'gain': cv2.CAP_PROP_GAIN
+        }
+        
+        for param_name, cv_prop in settings_map.items():
+            if param_name in self.params:
+                value = float(self.params[param_name])
+                self.cap.set(cv_prop, value)
+                
+        display(f"[OpenCV {self.cam_id}] Settings applied: {fps}fps, {width}x{height}")
+        
+    def set_param(self, param_name, value):
+        """Set a camera parameter"""
+        self.params[param_name] = value
+        
+        # Apply immediately if camera is open
+        if hasattr(self, 'cap') and self.cap is not None:
+            if param_name == 'frame_rate':
+                self.cap.set(cv2.CAP_PROP_FPS, float(value))
+            elif param_name == 'width':
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(value))
+            elif param_name == 'height': 
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(value))
+            elif param_name == 'auto_exposure':
+                if value:
+                    self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
+                else:
+                    self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+            elif param_name == 'exposure':
+                self.cap.set(cv2.CAP_PROP_EXPOSURE, float(value))
+            elif param_name == 'brightness':
+                self.cap.set(cv2.CAP_PROP_BRIGHTNESS, float(value))
+            elif param_name == 'contrast':
+                self.cap.set(cv2.CAP_PROP_CONTRAST, float(value))
+            elif param_name == 'saturation':
+                self.cap.set(cv2.CAP_PROP_SATURATION, float(value))
+            elif param_name == 'hue':
+                self.cap.set(cv2.CAP_PROP_HUE, float(value))
+            elif param_name == 'gain':
+                self.cap.set(cv2.CAP_PROP_GAIN, float(value))
+                
+    def apply_params(self):
+        """Apply all pending parameter changes"""
+        if hasattr(self, 'cap') and self.cap is not None:
+            self._apply_settings()
+            
+    def __enter__(self):
+        self.open()
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()

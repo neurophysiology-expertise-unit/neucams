@@ -1,6 +1,30 @@
 # build_neucams\build_installer.ps1
+param(
+    [switch]$Clean = $false,
+    [switch]$Help = $false
+)
+
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
+
+# Show help if requested
+if ($Help) {
+    Write-Host @"
+NeuCams Build Script
+
+Usage:
+  .\build_installer.ps1              # Normal build (cleans some artifacts)
+  .\build_installer.ps1 -Clean       # Full clean build (removes all artifacts)
+  .\build_installer.ps1 -Help        # Show this help
+
+Options:
+  -Clean    Perform a complete clean build, removing all build artifacts,
+            dist folders, cache files, and previous installers
+  -Help     Show this help message
+
+"@
+    exit 0
+}
 
 # keep PyInstaller outputs under build_neucams
 $Dist  = Join-Path $PSScriptRoot 'dist'
@@ -45,9 +69,67 @@ if (-not $haveNeuEnv) {
 # Ensure PyInstaller via pip (avoid conda solver)
 conda run -n $PYINSTALLER_ENV python -m pip install --upgrade "pyinstaller==6.15.0" | Out-Host
 
-# ---- Clean old outputs ----
-if (Test-Path (Join-Path $BuildDir 'build')) { Remove-Item -Recurse -Force (Join-Path $BuildDir 'build') }
-if (Test-Path $DistDir)                       { Remove-Item -Recurse -Force $DistDir }
+# ---- Enhanced Cleaning ----
+function Clean-BuildArtifacts {
+    param([bool]$FullClean = $false)
+    
+    Write-Host ">> Cleaning build artifacts..."
+    
+    # Standard cleanup (always done)
+    $standardCleanPaths = @(
+        (Join-Path $BuildDir 'build'),
+        $DistDir,
+        $PayloadZip
+    )
+    
+    foreach ($path in $standardCleanPaths) {
+        if (Test-Path $path) {
+            Write-Host "   Removing: $path"
+            Remove-Item -Recurse -Force $path -ErrorAction SilentlyContinue
+        }
+    }
+    
+    if ($FullClean) {
+        Write-Host "   Performing FULL clean..."
+        
+        # Additional paths for full clean
+        $fullCleanPaths = @(
+            (Join-Path $BuildDir '*.exe'),           # Previous installers
+            (Join-Path $BuildDir '__pycache__'),     # Python cache
+            (Join-Path $RepoRoot '**\__pycache__'),  # All Python cache
+            (Join-Path $RepoRoot '**\*.pyc'),        # Compiled Python files
+            (Join-Path $BuildDir 'NeuCams')         # Any leftover NeuCams folder
+        )
+        
+        foreach ($pattern in $fullCleanPaths) {
+            $items = Get-ChildItem -Path $pattern -Recurse -Force -ErrorAction SilentlyContinue
+            foreach ($item in $items) {
+                Write-Host "   Removing: $($item.FullName)"
+                Remove-Item -Recurse -Force $item.FullName -ErrorAction SilentlyContinue
+            }
+        }
+        
+        # Clear conda build cache if it exists
+        try {
+            conda clean --all -y | Out-Host
+            Write-Host "   Conda cache cleared"
+        } catch {
+            Write-Host "   Conda cache clear skipped (not critical)"
+        }
+        
+        # Force garbage collection to release file handles
+        [System.GC]::Collect()
+        [System.GC]::WaitForPendingFinalizers()
+        Start-Sleep -Seconds 2
+        
+        Write-Host "   Full clean completed"
+    }
+    
+    Write-Host "   Cleanup completed"
+}
+
+# Perform cleaning based on parameters
+Clean-BuildArtifacts -FullClean $Clean
 
 # ---- Build with PyInstaller ----
 Write-Host ">> Building NeuCams.exe via PyInstaller..."
@@ -69,7 +151,36 @@ if (Test-Path $JsonFilesDir) {
   Write-Warning "No jsonfiles at $JsonFilesDir (skipping)."
 }
 
-Compress-Archive -Path $toZip -DestinationPath $PayloadZip -Force
+# Enhanced zip creation with retry logic for file locking issues
+$maxRetries = 3
+$retryCount = 0
+$zipSuccess = $false
+
+while (-not $zipSuccess -and $retryCount -lt $maxRetries) {
+    try {
+        Compress-Archive -Path $toZip -DestinationPath $PayloadZip -Force
+        $zipSuccess = $true
+        Write-Host "   Payload zip created successfully"
+    }
+    catch {
+        $retryCount++
+        Write-Warning "   Zip attempt $retryCount failed: $($_.Exception.Message)"
+        
+        if ($retryCount -lt $maxRetries) {
+            Write-Host "   Waiting 3 seconds before retry..."
+            
+            # Force garbage collection to release file handles
+            [System.GC]::Collect()
+            [System.GC]::WaitForPendingFinalizers()
+            Start-Sleep -Seconds 3
+            
+            Write-Host "   Retrying zip creation..."
+        } else {
+            Write-Error "Failed to create payload.zip after $maxRetries attempts. File may be locked by another process."
+            throw $_
+        }
+    }
+}
 if (-not (Test-Path $PayloadZip)) { throw "Failed to create $PayloadZip" }
 Write-Host "   OK: payload.zip created."
 

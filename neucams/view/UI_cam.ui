@@ -92,13 +92,6 @@
        </property>
       </widget>
      </item>
-     <item>
-      <widget class="QCheckBox" name="remote_control_checkBox">
-       <property name="text">
-        <string>Remote Control</string>
-       </property>
-      </widget>
-     </item>
     </layout>
    </item>
    <item>

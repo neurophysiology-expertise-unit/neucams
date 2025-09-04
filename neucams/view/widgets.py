@@ -1,3 +1,4 @@
+# widgets.py
 import sys
 import os
 import time
@@ -14,7 +15,6 @@ from PyQt5.QtWidgets import (QAction, QApplication, QMainWindow, QMessageBox,
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from collections import deque
 
-# Removed unused direct imports from image_processing; widgets manage pipelines internally
 from neucams.udp_socket import UDPSocket
 from neucams.utils import display
 from neucams.camera_handler import CameraHandler
@@ -65,7 +65,7 @@ class NeuCamsWindow(QMainWindow):
     proven backend logic from the legacy GUI.
     """
     log_message = pyqtSignal(str)
-    _udp_server_created = False  # Re-use the one-per-process server guard
+    _udp_server_created = False  # one-per-process guard
 
     def __init__(self, preferences=None, preinit_cam_handlers=None):
         # Keep the same public API expected by the rest of the app
@@ -75,6 +75,29 @@ class NeuCamsWindow(QMainWindow):
 
         # Load the *new* Qt Designer layout
         uic.loadUi(join(dirpath, 'UI_NeuCams.ui'), self)
+
+        # ---- Subtle styling improvements - closer to original ----
+        self.setStyleSheet("""
+        QLabel#save_location_label { font-size: 10pt; }
+        QLabel#fps_label { font-size: 10pt; font-weight: 600; }
+        QLabel#frame_nr_label { font-size: 10pt; }
+        QToolButton#start_stop_pushButton { min-height: 34px; font-size: 11pt; }
+        QCheckBox#record_checkBox { font-size: 10pt; }
+        
+        /* Subtle improvements */
+        QCheckBox::indicator {
+            width: 16px;
+            height: 16px;
+        }
+        QCheckBox::indicator:checked {
+            background-color: #0078d4;
+            border: 1px solid #0078d4;
+        }
+        QCheckBox::indicator:disabled {
+            background-color: #f3f2f1;
+            border: 1px solid #c8c6c4;
+        }
+        """)
 
         # Set window icon (works with PyInstaller when icon.ico is bundled)
         try:
@@ -93,28 +116,76 @@ class NeuCamsWindow(QMainWindow):
                 self.mainToolBar.setIconSize(QSize(20, 20))
                 btn.setStyleSheet(
                     "QToolButton {"
-                    "  background-color: #eef3fa;"
-                    "  padding: 6px 12px;"
-                    "  border: 2px solid #b8c7e0;"
-                    "  border-radius: 0px;"
+                    "  background-color: #f0f0f0;"
+                    "  padding: 6px 14px;"
+                    "  border: 1px solid #c0c0c0;"
+                    "  border-radius: 4px;"
                     "  font-weight: 600;"
+                    "  font-size: 11pt;"
                     "}"
                     "QToolButton:hover {"
-                    "  background-color: #e6eef9;"
-                    "  border-color: #a8b9d8;"
+                    "  background-color: #e8e8e8;"
+                    "  border-color: #a0a0a0;"
                     "}"
                     "QToolButton:checked {"
-                    "  background-color: #f6ece9;"
-                    "  border-color: #d8bdb5;"
+                    "  background-color: #d4d4d4;"
+                    "  border-color: #808080;"
                     "}"
                 )
+                # Add a small fixed-width spacer right after the Master Start/Stop
+                from PyQt5.QtWidgets import QWidget
+                spacer_after_master = QWidget(self)
+                spacer_after_master.setFixedWidth(12)
+                self.mainToolBar.addWidget(spacer_after_master)
         except Exception:
             pass
 
+        # --- Universal Trigger control ---
+        from PyQt5.QtWidgets import QCheckBox
+        self.trigger_master_check = QCheckBox('Trigger', self)
+        self.trigger_master_check.setChecked(False)  # default free-run
+        self.trigger_master_check.stateChanged.connect(lambda _: self._broadcast_trigger_setting())
+        self.mainToolBar.addWidget(self.trigger_master_check)
+
+        # --- Global Run Name Controls ---
+        from PyQt5.QtWidgets import QLineEdit, QPushButton, QLabel, QWidget, QHBoxLayout, QVBoxLayout, QSizePolicy
+        # Container widget to allow vertical layout inside the horizontal toolbar
+        self.run_container = QWidget(self)
+        vbox = QVBoxLayout(self.run_container)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(2)
+        top_row = QWidget(self.run_container)
+        hbox = QHBoxLayout(top_row)
+        hbox.setContentsMargins(0, 0, 0, 0)
+        hbox.setSpacing(6)
+        self.run_name_edit = QLineEdit(self.run_container)
+        self.run_name_edit.setPlaceholderText('session_name/run_name')
+        self.run_name_edit.setFixedWidth(350)
+        self.set_run_name_btn = QPushButton('Set', self.run_container)
+        self.set_run_name_btn.setEnabled(False)
+        self.set_run_name_btn.clicked.connect(self._on_set_run_name)
+
+        # Connect text changes to update button state, path preview, and record controls
+        self.run_name_edit.textChanged.connect(self._update_runname_controls_enabled)
+        self.run_name_edit.textChanged.connect(self._update_global_path_label)
+        self.run_name_edit.textChanged.connect(self._update_record_controls_enabled)
+        hbox.addWidget(self.run_name_edit)
+        hbox.addWidget(self.set_run_name_btn)
+        top_row.setLayout(hbox)
+        self.global_path_label = QLabel('', self.run_container)
+        small_font = self.global_path_label.font()
+        small_font.setPointSize(8)
+        self.global_path_label.setFont(small_font)
+        vbox.addWidget(top_row)
+        vbox.addWidget(self.global_path_label)
+        self.run_container.setLayout(vbox)
+        spacer = QWidget(self)
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.mainToolBar.addWidget(spacer)
+        self.mainToolBar.addWidget(self.run_container)
+
         # --- Logging Setup ---
-        # self.log_message.connect(self.log_textEdit.append)
         handler = QtLogHandler(self)
-        # Optional: Add formatting to the handler
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s',
                                       datefmt='%H:%M:%S')
         handler.setFormatter(formatter)
@@ -122,9 +193,6 @@ class NeuCamsWindow(QMainWindow):
         logging.getLogger().setLevel(logging.INFO)
 
         display("neucams started.")
-
-        # Reuse the existing icon so we do not need to copy the whole folder
-        # self.setWindowIcon(QIcon(legacy_icon_path))
 
         # ------------------------------------------------------------------
         # Camera widgets setup (logic copied from legacy implementation)
@@ -144,21 +212,37 @@ class NeuCamsWindow(QMainWindow):
 
         # Arrange the camera windows in a grid
         self.mdiArea.tileSubWindows()
+        
+        # Update initial control states
+        self._update_record_controls_enabled()
 
         # ------------------------------------------------------------------
-        # Optional UDP server (one per process)
+        # Optional UDP server (one per process) — gated by udp_enable flag
         # ------------------------------------------------------------------
         server_params = self.preferences.get('server_params', None)
-        if (server_params is not None and
-                not hasattr(NeuCamsWindow, '_udp_server_created')):
-            server_type = server_params.get('server', None)
-            if server_type == 'udp':
-                self.server = UDPSocket((server_params.get('server_ip', '0.0.0.0'),
-                                         server_params.get('server_port', 9999)))
-                self._timer = QTimer(self)
-                self._timer.timeout.connect(self._process_server_messages)
-                self._timer.start(server_params.get('server_refresh_time', 100))
+        if (server_params and isinstance(server_params, dict)
+            and bool(server_params.get('udp_enable', False))
+            and not NeuCamsWindow._udp_server_created):
+            try:
+                self._init_udp_server(server_params)
                 NeuCamsWindow._udp_server_created = True
+            except Exception as e:
+                logging.getLogger().warning(f"UDP server could not be initialized: {e}")
+
+        # Setup periodic UI updates for run-name controls, trigger checkbox, and record controls
+        self._ui_timer = QTimer(self)
+        self._ui_timer.timeout.connect(self._update_runname_controls_enabled)
+        self._ui_timer.timeout.connect(self._update_global_path_label)
+        self._ui_timer.timeout.connect(self._update_udp_status_label)
+        self._ui_timer.timeout.connect(self._update_trigger_controls_enabled)
+        self._ui_timer.timeout.connect(self._update_record_controls_enabled)
+        self._ui_timer.start(300)
+        self._update_global_path_label()
+
+        # Status bar UDP indicator
+        from PyQt5.QtWidgets import QLabel
+        self.udp_status_label = QLabel('UDP: OFF', self)
+        self.statusbar.addPermanentWidget(self.udp_status_label)
 
         # Misc UI initialisation
         self.mdiArea.setActivationOrder(1)
@@ -166,7 +250,6 @@ class NeuCamsWindow(QMainWindow):
 
         # --- Master Start/Stop wiring ---
         self.actionMasterStartStop.toggled.connect(self._master_toggled)
-        # Periodically update availability
         self._master_ui_timer = QTimer(self)
         self._master_ui_timer.timeout.connect(self._update_master_action_enabled)
         self._master_ui_timer.start(150)
@@ -177,8 +260,6 @@ class NeuCamsWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Legacy helpers copied / simplified from the original widgets.py
     # ------------------------------------------------------------------
-
-    # widgets.py
 
     def _compute_is_triggered(self, cam_dict):
         p = (cam_dict or {}).get('params', {}) or {}
@@ -196,10 +277,9 @@ class NeuCamsWindow(QMainWindow):
             widget = CamWidget(cam_handler)
             widget.is_triggered = self._compute_is_triggered(cam_dict)
             self.cam_widgets.append(widget)
-            self._add_widget(cam_dict.get('description', 'Camera'), widget)  # pass widget
+            self._add_widget(cam_dict.get('description', 'Camera'), widget)
         else:
             cam_handler.close()
-
 
     def _add_widget(self, name, widget):
         active_subwindows = [e.objectName() for e in self.mdiArea.subWindowList()]
@@ -216,15 +296,90 @@ class NeuCamsWindow(QMainWindow):
             widget.show()
 
     # ------------------------------------------------------------------
-    # UDP helper
+    # UDP helpers
     # ------------------------------------------------------------------
 
+    def _init_udp_server(self, server_params: dict):
+        ip = str(server_params.get('server_ip') or '0.0.0.0')
+        port = int(server_params.get('server_port', 9999))
+        refresh = int(server_params.get('server_refresh_time', 30))
+
+        self.server = None
+        self._server_timer = None
+
+        try:
+            self.server = UDPSocket((ip, port))
+            self._server_timer = QTimer(self)
+            self._server_timer.timeout.connect(self._process_server_messages)
+            self._server_timer.start(refresh)
+            display(f"UDP server listening on {ip}:{port}")
+        except Exception as e:
+            # If UDPSocket() partially succeeded but something else failed, close it.
+            if self.server is not None:
+                try:
+                    self.server.close()
+                except Exception:
+                    pass
+                self.server = None
+            logging.getLogger().warning(f"UDP server could not be initialized: {e}")
+
+
+    def _handle_set_run_via_udp_and_start(self, run_spec: str):
+        """Stops all cameras, sets the run name, and triggers Master Start."""
+        run_spec = (run_spec or "").strip()
+        if not run_spec:
+            return
+
+        display(f"UDP command received: Set run name to '{run_spec}' and start.")
+
+        # 1) Stop any running acquisition
+        if self._any_camera_running():
+            self.actionMasterStartStop.setChecked(False) # This will trigger _master_toggled to stop all
+
+        # 2) Wait for all cameras to be fully stopped
+        t0 = time.time()
+        while not self._all_cameras_stopped() and (time.time() - t0 < 5.0):
+            QApplication.processEvents() # Allow UI to process the stop events
+            time.sleep(0.05)
+        
+        if not self._all_cameras_stopped():
+            display("UDP: Timed out waiting for cameras to stop. Aborting start.", level='warning')
+            return
+
+        # 3) Update UI textbox and apply the new run name to camera handlers
+        self.run_name_edit.setText(run_spec)
+        self._apply_run_name_to_cameras(run_spec)
+        self._update_global_path_label()
+
+        # 4) Start master acquisition
+        self.actionMasterStartStop.setChecked(True) # This will trigger _master_toggled to start all
+
+        # 5) Show confirmation popup
+        QMessageBox.information(self, 
+            'UDP Command Executed', 
+            f'Stopped all cameras, set run name to "{run_spec}", and started acquisition.')
+
+
     def _process_server_messages(self):
-        ret, msg, address = self.server.receive()
+        srv = getattr(self, 'server', None)
+        if not srv:
+            return
+        ret, msg, address = srv.receive()
         if not ret:
             return
 
-        action, *value = [i.lower() for i in msg.split('=')]
+        raw = (msg or "").strip()
+        # If the message has no '=', treat it as the run name directly
+        if raw and ('=' not in raw):
+            self._handle_set_run_via_udp_and_start(raw)
+            self.server.send('ok=setrun_and_start', address)
+            return
+
+        # key=value format
+        try:
+            action, *value = [i.lower() for i in msg.split('=')]
+        except Exception:
+            return
 
         if action == 'ping':
             display(f'Server got pinged [{address}]')
@@ -258,6 +413,12 @@ class NeuCamsWindow(QMainWindow):
                     return
             self.server.send('done?=camera not found', address)
 
+        elif action in ('setrun', 'run', 'name'):
+            run_value = value[0] if value else ''
+            self._handle_set_run_via_udp_and_start(run_value)
+            display(f'Run name set via UDP: {run_value} [{address}]')
+            self.server.send('ok=setrun', address)
+
         elif action == 'quit':
             display(f'Exiting [{address}]')
             self.server.send('ok=bye', address)
@@ -286,44 +447,245 @@ class NeuCamsWindow(QMainWindow):
             self.mdiArea.setViewMode(0)
             self.mdiArea.tileSubWindows()
 
-    # ---- Master action logic ----
-    def _eligible_cam_widgets_for_master(self):
-        # Skip cameras that are configured for trigger
-        return [w for w in self.cam_widgets if not w.is_triggered]
+    # ---- Master action logic (fixed: disabled in mixed states) ----
+    def _any_camera_running(self):
+        for w in self.cam_widgets:
+            ch = w.cam_handler
+            if ch.start_trigger.is_set() and not ch.stop_trigger.is_set():
+                return True
+        return False
 
-    def _all_ready(self):
-        candidates = self._eligible_cam_widgets_for_master()
-        if not candidates:
+    def _all_cameras_running(self):
+        if not self.cam_widgets:
             return False
-        return all(w.cam_handler.camera_ready.is_set() for w in candidates)
+        for w in self.cam_widgets:
+            ch = w.cam_handler
+            if not (ch.start_trigger.is_set() and not ch.stop_trigger.is_set()):
+                return False
+        return True
+
+    def _all_cameras_stopped(self):
+        if not self.cam_widgets:
+            return False
+        for w in self.cam_widgets:
+            ch = w.cam_handler
+            if ch.start_trigger.is_set() and not ch.stop_trigger.is_set():
+                return False
+        return True
 
     def _update_master_action_enabled(self):
-        # Enabled when: all eligible cams ready OR the master is already toggled on
-        enable = self._all_ready()
-        self.actionMasterStartStop.setEnabled(enable or self.actionMasterStartStop.isChecked())
-        # Update text to reflect current intent (no recording semantics)
-        self.actionMasterStartStop.setText("Master Stop" if self.actionMasterStartStop.isChecked() else "Master Start")
+        all_running = self._all_cameras_running()
+        all_stopped = self._all_cameras_stopped()
+        mixed = not (all_running or all_stopped)
+
+        # Enable only when uniform; disable when mixed
+        self.actionMasterStartStop.setEnabled(not mixed)
+
+        if all_running:
+            if not self.actionMasterStartStop.isChecked():
+                self.actionMasterStartStop.setChecked(True)
+            self.actionMasterStartStop.setText("Master Stop")
+        elif all_stopped:
+            if self.actionMasterStartStop.isChecked():
+                self.actionMasterStartStop.setChecked(False)
+            self.actionMasterStartStop.setText("Master Start")
+        else:
+            self.actionMasterStartStop.setText("Master (mixed)")
 
     def _master_toggled(self, checked: bool):
+        # Safety: if mixed, bail (should already be disabled)
+        if not (self._all_cameras_running() or self._all_cameras_stopped()):
+            return
+
         if checked:
-            # Start all eligible and ready cams (do not touch recording state)
-            for w in self._eligible_cam_widgets_for_master():
-                ch = w.cam_handler
-                if ch.camera_ready.is_set():
-                    started = ch.start_acquisition()
-                    if started:
-                        w._set_stop_text()
-            # After action, re-evaluate availability
-            self._update_master_action_enabled()
+            # Broadcast trigger setting first, then start after a short delay
+            try:
+                self._broadcast_trigger_setting()
+            except Exception:
+                pass
+            from PyQt5.QtCore import QTimer
+            def _do_start_all():
+                for w in self.cam_widgets:
+                    ch = w.cam_handler
+                    if ch.camera_ready.is_set():
+                        started = ch.start_acquisition()
+                        if started:
+                            w._set_stop_text()
+                self._update_master_action_enabled()
+            QTimer.singleShot(60, _do_start_all)
         else:
-            # Stop all eligible cams that are currently running
-            for w in self._eligible_cam_widgets_for_master():
+            # Stop all
+            for w in self.cam_widgets:
                 ch = w.cam_handler
                 is_running = ch.start_trigger.is_set() and not ch.stop_trigger.is_set()
                 if is_running:
                     ch.stop_acquisition()
                     w._set_start_text()
-            self._update_master_action_enabled()
+
+        self._update_master_action_enabled()
+
+    def _broadcast_trigger_setting(self):
+        """Send the universal trigger mode to all cameras that can accept it.
+        Cameras that do not recognize it will safely ignore it in apply_params()."""
+        want_on = self.trigger_master_check.isChecked()
+        val = 'On' if want_on else 'Off'
+        for w in self.cam_widgets:
+            ch = w.cam_handler
+            try:
+                # Skip Dalsa/GenICam cameras entirely from global trigger control
+                driver = ch.cam_dict.get('driver', '').lower()
+                if driver == 'genicam':
+                    display(f"Skipping trigger setting for Dalsa camera '{ch.cam_dict.get('description', 'unknown')}' - not supported")
+                    continue
+                
+                # Optional guard using capability flag when available
+                supported = True
+                try:
+                    supported = bool(getattr(ch, 'trigger_supported', None).value)
+                except Exception:
+                    supported = True  # best-effort
+                if supported:
+                    ch.set_cam_param('trigger_mode', val)
+            except Exception:
+                pass
+            # reflect on per-camera checkbox if present
+            try:
+                if hasattr(w, 'trigger_checkBox'):
+                    w.trigger_checkBox.setChecked(want_on)
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # Global run name helpers
+    # ------------------------------------------------------------------
+    def _get_data_folder(self):
+        # recorder_params are shared across cams
+        rec = self.preferences.get('recorder_params', {}) if isinstance(self.preferences, dict) else {}
+        return rec.get('data_folder', None)
+
+    def _update_runname_controls_enabled(self):
+        # Only allow setting when all cameras are stopped
+        enabled = not self._any_camera_running()
+        self.set_run_name_btn.setEnabled(enabled and len(self.run_name_edit.text().strip()) > 0)
+    
+    def _update_trigger_controls_enabled(self):
+        # Disable trigger checkbox when any camera is running
+        enabled = not self._any_camera_running()
+        self.trigger_master_check.setEnabled(enabled)
+    
+    def _update_record_controls_enabled(self):
+        # Disable record checkboxes when no save path is set
+        # Check if any camera actually has a folder path set (meaning "Set" was clicked)
+        has_valid_path = False
+        if self.cam_widgets:
+            # Check if at least one camera has a folder path set
+            for w in self.cam_widgets:
+                ch = w.cam_handler
+                if ch.get_folder_path().strip():
+                    has_valid_path = True
+                    break
+        
+        for w in self.cam_widgets:
+            if hasattr(w, 'record_checkBox'):
+                # Only enable if path is set AND camera is not currently running
+                ch = w.cam_handler
+                is_running = ch.start_trigger.is_set() and not ch.stop_trigger.is_set()
+                enabled = has_valid_path and not is_running
+                w.record_checkBox.setEnabled(enabled)
+                
+                # Set helpful tooltip based on why it's disabled
+                if not enabled:
+                    if not has_valid_path:
+                        w.record_checkBox.setToolTip("Set a save path first using the 'Set' button above")
+                    elif is_running:
+                        w.record_checkBox.setToolTip("Stop camera to change recording state")
+                else:
+                    w.record_checkBox.setToolTip("Enable/disable recording for this camera")
+
+    def _update_global_path_label(self):
+        data_folder = self._get_data_folder()
+        name = self.run_name_edit.text().strip()
+        camera_segment = 'camera_name'
+        if not data_folder:
+            self.global_path_label.setText('')
+            return
+        
+        # Show structure: data_folder/camera_name/session_name/run_name
+        if name:
+            # Convert backslashes to forward slashes for display
+            normalized_name = name.replace('\\', '/')
+            base = join(data_folder, camera_segment, normalized_name)
+        else:
+            base = join(data_folder, camera_segment, 'session_name/run_name')
+        
+        # Convert all path separators to forward slashes for consistent display
+        display_path = base.replace('\\', '/')
+        self.global_path_label.setText(f'Save path: {display_path}')
+
+    def _update_udp_status_label(self):
+        # Reflect udp_enable preference and actual server object state
+        enabled = bool((self.preferences.get('server_params') or {}).get('udp_enable', False))
+        active = hasattr(self, 'server') and (self.server is not None)
+        txt = 'UDP: ON' if (enabled and active) else ('UDP: OFF' if not enabled else 'UDP: ERROR')
+        self.udp_status_label.setText(txt)
+
+    def set_global_run_name(self, name: str):
+        self.run_name_edit.setText(name)
+        self._apply_run_name_to_cameras(name)
+        self._update_global_path_label()
+        self._update_record_controls_enabled()
+
+    def _on_set_run_name(self):
+        name = self.run_name_edit.text().strip()
+        if not name:
+            return
+        if self._any_camera_running():
+            QMessageBox.warning(self, 'Cameras running', 'Stop all cameras before changing the save name.')
+            return
+        
+        # Basic validation - check for invalid characters
+        invalid_chars = ['<', '>', ':', '"', '|', '?', '*']
+        if any(char in name for char in invalid_chars):
+            QMessageBox.warning(self, 'Invalid characters', 
+                              f'Path contains invalid characters: {", ".join(char for char in invalid_chars if char in name)}\n'
+                              'Please use only letters, numbers, underscores, hyphens, and forward slashes.')
+            return
+        
+        self._apply_run_name_to_cameras(name)
+        # Update record controls now that path is set
+        self._update_record_controls_enabled()
+        # Show confirmation with path preview (camera_name placeholder)
+        df = self._get_data_folder() or ''
+        normalized_name = name.replace('\\', '/')
+        preview_path = join(df, "camera_name", normalized_name).replace('\\', '/')
+        QMessageBox.information(self, 'Save path updated', f'Save path set to:\n{preview_path}')
+
+    def _apply_run_name_to_cameras(self, name: str):
+        data_folder = self._get_data_folder()
+        if not data_folder:
+            return  # silent in UDP path
+
+        # Expected format: session_name/run_name or session_name\run_name
+        # Convert backslashes to forward slashes for consistency
+        normalized_name = name.replace('\\', '/')
+        
+        for w in self.cam_widgets:
+            ch = w.cam_handler
+            cam_desc = ch.cam_dict.get('description', 'camera')
+            # Structure: data_folder/camera_description/session_name/run_name
+            new_folder = join(data_folder, cam_desc, normalized_name)
+            # Ask handler to apply folder immediately (writer aware)
+            try:
+                ch.cam_param_InQ.put(('set_folder', new_folder))
+            except Exception:
+                # Fallback to shared-array update
+                ch.set_folder_path(new_folder)
+            # Refresh the filepath preview used by UI labels immediately
+            new_fp = ch.get_new_filepath()
+            if hasattr(w, "save_location_label"):
+                # Convert backslashes to forward slashes for consistent display
+                display_filepath = new_fp.replace('\\', '/')
+                w.save_location_label.setText('Filepath: ' + display_filepath)
 
     # ------------------------------------------------------------------
     # Graceful shutdown
@@ -340,6 +702,19 @@ class NeuCamsWindow(QMainWindow):
             event.ignore()
 
     def close(self):
+        # stop UDP polling first
+        try:
+            if hasattr(self, "_server_timer") and self._server_timer is not None:
+                self._server_timer.stop()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "server") and self.server is not None:
+                self.server.close()
+                self.server = None
+        except Exception:
+            pass
+
         for cam_widget in self.cam_widgets:
             h = cam_widget.cam_handler
             try:
@@ -357,6 +732,7 @@ class NeuCamsWindow(QMainWindow):
         QApplication.quit()
         sys.exit()
 
+
 class CamWidget(BaseCameraWidget):
     def __init__(self, cam_handler=None):
         super().__init__(cam_handler)
@@ -371,11 +747,32 @@ class CamWidget(BaseCameraWidget):
         self._prev_frame_nr = 0
         self._fps_deque = deque(maxlen=5)
 
+        # Optional: direct font control (instead of stylesheets)
+        for _name, _pt, _bold in [
+            ("save_location_label", 10, False),
+            ("fps_label", 10, True),
+            ("frame_nr_label", 10, False),
+        ]:
+            w = getattr(self, _name, None)
+            if w:
+                f = w.font()
+                f.setPointSize(_pt)
+                f.setBold(_bold)
+                w.setFont(f)
+
+        # Make the Start/Stop button a bit bigger by default
+        if hasattr(self, "start_stop_pushButton"):
+            self.start_stop_pushButton.setMinimumHeight(34)
+            self.start_stop_pushButton.setMinimumWidth(90)
+
         # --- Connections ---
         self.start_stop_pushButton.clicked.connect(self._start_stop_toggled)
         self.record_checkBox.stateChanged.connect(self._record)
         self.display_settings_pushButton.clicked.connect(self._toggle_display_settings)
         self.image_processing_pushButton.clicked.connect(self._toggle_img_processing_settings)
+        
+        # Initialize record checkbox as disabled (will be enabled once save path is set)
+        self.record_checkBox.setEnabled(False)
 
         # --- Child widgets ---
         self.display_settings = DisplaySettingsWidget(self)
@@ -387,11 +784,24 @@ class CamWidget(BaseCameraWidget):
             pipeline.stages.insert(0, self.img_processing_settings.bg_subtract_stage)
             pipeline.stages.insert(0, self.img_processing_settings.blur_stage)
 
+        # Reflect initial trigger state if known
+        try:
+            if hasattr(self, 'trigger_checkBox') and self.cam_handler is not None:
+                # read current param (both styles supported)
+                p = getattr(self.cam_handler, 'cam_dict', {}).get('params', {})
+                trig_val = p.get('trigger_mode', p.get('trigger', p.get('TriggerMode', 'Off')))
+                is_on = str(trig_val).lower() in ('on', 'true', '1') if isinstance(trig_val, str) else bool(trig_val)
+                self.trigger_checkBox.setChecked(is_on)
+        except Exception:
+            pass
+
     def _update(self):
         if self.cam_handler is None:
             return
         dest = self.cam_handler.get_filepath()
-        self.save_location_label.setText('Filepath: ' + dest)
+        # Convert backslashes to forward slashes for consistent display
+        display_dest = dest.replace('\\', '/')
+        self.save_location_label.setText('Filepath: ' + display_dest)
         if self.frame_nr != self.cam_handler.total_frames.value:
             img = self.cam_handler.get_image()
             if isinstance(img, tuple) and len(img) == 3 and isinstance(img[0], str):
@@ -404,11 +814,28 @@ class CamWidget(BaseCameraWidget):
             self.is_img_processed = False
             self._update_img()
         self._update_stats()
+        self._sync_record_checkbox()
+
+    def _toggle_trigger_checkbox(self, state):
+        # Do not apply immediately if camera is running
+        if self.cam_handler is None:
+            return
+        is_running = self.cam_handler.start_trigger.is_set() and not self.cam_handler.stop_trigger.is_set()
+        if is_running:
+            return
+        # Update the camera parameter in the child process on next _process_params
+        enabled = bool(state)
+        # Canonical param key is 'trigger_mode': 'On'|'Off'
+        try:
+            val = 'On' if enabled else 'Off'
+            self.cam_handler.set_cam_param('trigger_mode', val)
+        except Exception:
+            pass
 
     def _update_img(self):
         if not self.cam_handler or not self.cam_handler.start_trigger.is_set():
             return
-            
+
         if self.original_img is not None and self.original_img.size > 0:
             if not self.is_img_processed:
                 self.processed_img = self.display_settings.process_img(self.original_img)
@@ -432,6 +859,19 @@ class CamWidget(BaseCameraWidget):
             self._prev_frame_nr = current_frame
         self.frame_nr_label.setText(f"frame: {current_frame}")
 
+    def _sync_record_checkbox(self):
+        """Sync the record checkbox with the actual saving state from camera handler"""
+        if self.cam_handler:
+            # Check if saving state changed (e.g., turned off due to path error)
+            is_saving = self.cam_handler.saving.is_set()
+            is_checked = self.record_checkBox.isChecked()
+            
+            # If saving was turned off but checkbox is checked, uncheck it
+            if not is_saving and is_checked:
+                self.record_checkBox.blockSignals(True)  # Prevent triggering _record again
+                self.record_checkBox.setChecked(False)
+                self.record_checkBox.blockSignals(False)
+
     def _start_stop_toggled(self, checked):
         if checked:
             self.start_cam()
@@ -441,12 +881,12 @@ class CamWidget(BaseCameraWidget):
     def _set_start_text(self):
         self.start_stop_pushButton.setText("Start")
         self.start_stop_pushButton.setChecked(False)
-        self.record_checkBox.setEnabled(True)
+        # Don't enable record checkbox here - let the path checking logic handle it
 
     def _set_stop_text(self):
         self.start_stop_pushButton.setText("Stop")
         self.start_stop_pushButton.setChecked(True)
-        self.record_checkBox.setEnabled(False)
+        # Don't disable record checkbox here - let the path checking logic handle it
 
     def _record(self, state):
         if state:
@@ -458,4 +898,4 @@ class CamWidget(BaseCameraWidget):
         self.display_settings.setVisible(not self.display_settings.isVisible())
 
     def _toggle_img_processing_settings(self):
-        self.img_processing_settings.setVisible(not self.img_processing_settings.isVisible()) 
+        self.img_processing_settings.setVisible(not self.img_processing_settings.isVisible())

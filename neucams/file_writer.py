@@ -52,11 +52,14 @@ class FileWriter(Process):
                        frames_per_file = 0):
         super().__init__()
         self.filepath_array = Array('u',' ' * 1024)
-        self.filepath = filepath
-        # NEW: remember the base filepath (without the _i suffix). Used for rollover.
-        self.base_filepath = filepath
-        
+        # Set extension first (needed for get_complete_filepath)
         self.extension = extension
+        # Store the base path for rollover operations
+        self.base_filepath = filepath
+        # Initialize with complete filepath (with extension and availability check)
+        complete_filepath = self.get_complete_filepath(filepath)
+        self.update_filepath_array(complete_filepath)
+        # Don't store separate copies - always use the shared array
         self.frames_per_file = frames_per_file
 
         self.start_flag = Event()
@@ -98,17 +101,35 @@ class FileWriter(Process):
             self.stop_flag.set()
             self.is_run_closed.wait()
             self.is_run_closed.clear()
-        # Keep base for subsequent rollovers
+        
+        # Store the base filepath for rollover operations
         self.base_filepath = filepath
-        filepath = self.get_complete_filepath(filepath)
-        self.update_filepath_array(filepath)
+        # Update the shared array with the complete filepath
+        complete_filepath = self.get_complete_filepath(filepath)
+        self.update_filepath_array(complete_filepath)
         self.file_handler = None
+        
+        # Reset frame counting for new file/run and log the reset
+        old_global_count = self.global_frame_index
+        self.global_frame_index = 0
+        self.file_frame_index = 0
+        if hasattr(self, 'saved_frame_count'):
+            self.saved_frame_count = 0
+        
+        if old_global_count > 0:
+            display(f"Frame count reset: {old_global_count} frames reset to 0 for new save location: {complete_filepath}")
         
     def get_complete_filepath(self, filepath):
         """Adds the extension, checks that the filepath is available.
         If not, checks the next available filepath using an unpadded index:
             filepath_1.extension, filepath_2.extension, ...
         """
+        # First try without suffix
+        complete_filepath = f"{filepath}.{self.extension}"
+        if not isfile(complete_filepath):
+            return complete_filepath
+        
+        # If base name exists, try with incrementing suffix
         i = 1
         complete_filepath = f"{filepath}_{i}.{self.extension}"
         while isfile(complete_filepath):
@@ -206,17 +227,18 @@ class FileWriter(Process):
 
     def _init_file_handler(self, frame):
         """open file generic"""
-        # Decide path: first open uses current path; rollover picks a fresh one
+        # For rollover, generate a new complete path based on the current base
         if (self.frames_per_file > 0 and
             getattr(self, 'saved_frame_count', 0) > 0 and
             (self.saved_frame_count % self.frames_per_file) == 0):
-            # Rollover: pick next available based on the original base filepath
-            new_path = self.get_complete_filepath(self.base_filepath)
-            self.update_filepath_array(new_path)
+            # Rollover: pick next available based on the current base filepath
+            if hasattr(self, 'base_filepath'):
+                new_path = self.get_complete_filepath(self.base_filepath)
+                self.update_filepath_array(new_path)
 
         # Use whatever is currently in the shared array as the target path
-        self.filepath = self.get_filepath()
-        folder = dirname(self.filepath)
+        current_filepath = self.get_filepath()
+        folder = dirname(current_filepath)
         if not os.path.exists(folder):
             try:
                 os.makedirs(folder)
@@ -230,7 +252,7 @@ class FileWriter(Process):
         # Close previous file **only** (keep timelog open across rollovers)
         self._release_file_handler()
         # Open new file handler
-        self.file_handler = self._get_file_handler(self.filepath, frame)
+        self.file_handler = self._get_file_handler(current_filepath, frame)
 
         
     def _get_file_handler(self, filepath, frame):
@@ -270,7 +292,8 @@ class FileWriter(Process):
             print("ERROR: could not save image, queue is full")
     
     def run(self):
-        self.set_filepath(self.filepath)
+        # DO NOT reset filepath here - it should only be set by external calls to set_filepath()
+        # self.set_filepath(self.filepath)  # <-- THIS WAS THE BUG
         self.start_flag.set()
         while not self.close_flag.is_set():
             # Start of a run
@@ -286,9 +309,11 @@ class FileWriter(Process):
 
     
     def _close_run(self):
+        # Process any remaining frames in the queue before closing
+        self._process_queue()
         self._release_file_handler()
         self._release_ts_log()   # close the single timelog at end of run
-        self._clear_queue()
+        self._clear_queue()  # Clear any remaining items after processing
         self.stop_flag.clear()
         self.is_run_closed.set()
 
@@ -323,11 +348,11 @@ class FileWriter(Process):
                 frameid, timestamp = metadata[:2]
                 try:
                     self._write(frame, frameid, timestamp)
-                    # NEW: log per-frame timestamp to sidecar
+                    # Only log timestamp after successful write
                     self._log_timestamp(timestamp)
+                    self.saved_frame_count += 1
                 except Exception:
                     self.error_count += 1
-                self.saved_frame_count += 1
             finally:
                 shm.close()
                 shm.unlink()
@@ -340,11 +365,11 @@ class FileWriter(Process):
             frameid, timestamp = metadata[:2] 
             try:
                 self._write(frame,frameid,timestamp)
-                # NEW: log per-frame timestamp to sidecar
+                # Only log timestamp after successful write
                 self._log_timestamp(timestamp)
+                self.saved_frame_count += 1
             except Exception:
                 self.error_count += 1
-            self.saved_frame_count += 1
                 
     def close(self):
         self.close_flag.set()

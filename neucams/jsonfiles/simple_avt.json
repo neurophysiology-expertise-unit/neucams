@@ -12,6 +12,6 @@
       }
     ],
     "recorder_params": { "compress": 0, "data_folder": "I:\\mouselab\\data", "tiff_size": 60,
-      "experiment_folder": "frametest", "recorder": "tiff", "recorder_sleep_time": 0.05 }
+     "recorder": "tiff", "recorder_sleep_time": 0.05 }
   }
   

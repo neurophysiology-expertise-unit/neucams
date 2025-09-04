@@ -1,29 +1,13 @@
 {
     "cams": [
         {
-            "description": "dalsa1",
-            "driver": "genicam",
-            "serial_number": "H2260407",
-            "params": {
-                "exposure": 1500,
-                "frame_rate": 30,
-                "n_frames": 1,
-                "binning": 1,
-                "trigger_mode": "Off",
-                "trigger_source": "Line1"
-            }
-        },
-        {
             "description": "dalsa2",
             "driver": "genicam",
             "serial_number": "H2260415",
             "params": {
                 "exposure": 1500,
                 "frame_rate": 30,
-                "n_frames": 1,
-                "binning": 1,
-                "trigger_mode": "Off",
-                "trigger_source": "Line1"
+                "verbose": true
             }
         },
         {
@@ -31,16 +15,11 @@
             "driver": "avt",
             "serial_number": "50-0537068788",
             "params": {
-              "frame_rate": 100,
+              "frame_rate": 30,
               "exposure_auto": "Off",
               "exposure": 500,
               "trigger_mode": "Off",
               "trigger_source": "Line1",
-              "sync_out_source": "FrameReadout",
-              "sync_out_levels": 1,
-              "sync_out_selector": "SyncOut2",
-              "sync_out_polarity": "Normal",
-              "stream_constrain": false,
               "asynchronous": true,
               "verbose": true
             }
@@ -48,6 +27,15 @@
         ],
     
         "recorder_params": { "compress": 0, "data_folder": "I:\\mouselab\\data",
-          "experiment_folder": "triptest", "recorder": "tiff", "recorder_sleep_time": 0.05 }
-    
+        "recorder": "tiff", "recorder_sleep_time": 0.05 },
+        
+    "server_params": {
+      "server": "udp",
+      "udp_enable": false,
+      "server_ip": "0.0.0.0",
+      "server_port": 9999,
+      "server_refresh_time": 30
+    }
+
+
 } 

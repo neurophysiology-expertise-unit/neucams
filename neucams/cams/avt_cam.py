@@ -426,7 +426,22 @@ class AVTCam(GenericCam):
             if not _has(self.cam_handle, name):
                 self._v(f"[AVT][apply] skip {name} (missing)")
                 return None
-            return _safe_set(node(name), name, value, clamp=clamp, vprint=self._v, log=self._verbose)
+            feat = node(name)
+            # Proactively skip if feature is not writable (prevents noisy errors)
+            try:
+                can_write = True
+                if hasattr(feat, "is_writeable") and callable(getattr(feat, "is_writeable", None)):
+                    can_write = bool(feat.is_writeable())
+                elif hasattr(feat, "is_writeable"):
+                    # Some versions expose it as a property
+                    can_write = bool(getattr(feat, "is_writeable"))
+                if not can_write:
+                    self._v(f"[AVT][apply] skip {name} (not writable)")
+                    return None
+            except Exception:
+                # If writability probe fails, fall through to best-effort set
+                pass
+            return _safe_set(feat, name, value, clamp=clamp, vprint=self._v, log=self._verbose)
 
         # ---- Exposure & Gain autos first ----
         ga = _auto_mode(_first_present(p, ["gain_auto", "GainAuto"]))
