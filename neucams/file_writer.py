@@ -76,7 +76,7 @@ class FileWriter(Process):
         self.global_frame_index = 0
         self._ts_scale = None  # chosen from {1, 1e3, 1e6, 1e9} to convert to seconds
         self._ts_deltas = []   # collect a few deltas to infer scale robustly
-
+        self._cam_info = {} # Store camera information for pre-initialization
 
         self.file_frame_index = 0  # 0..(frames_per_file-1) within current file
 
@@ -97,28 +97,58 @@ class FileWriter(Process):
         return str(self.filepath_array[:]).strip(' ')
         
     def set_filepath(self, filepath):
-        if self.start_flag.is_set():
-            self.stop_flag.set()
-            self.is_run_closed.wait()
-            self.is_run_closed.clear()
-        
+        # Check if an acquisition is currently running
+        if not self.stop_flag.is_set():
+            display("ERROR: Cannot change filepath while acquisition is active. Please stop the camera first.", level='error')
+            return
+
+        # Close any open file/timelog cleanly (old run), then update path.
+        self._release_file_handler()
+        self._release_ts_log()
+
         # Store the base filepath for rollover operations
         self.base_filepath = filepath
+
         # Update the shared array with the complete filepath
         complete_filepath = self.get_complete_filepath(filepath)
         self.update_filepath_array(complete_filepath)
+
+        # Pre-create folder and pre-open timelog (moves work off the first frame)
+        folder = dirname(complete_filepath) or '.'
+        if not os.path.exists(folder):
+            try:
+                os.makedirs(folder)
+            except Exception as e:
+                print(f"Could not create folder {folder} : {e}")
+
+        # Fresh timelog for the new run (even before frames arrive)
+        self._open_ts_log()
+
         self.file_handler = None
-        
-        # Reset frame counting for new file/run and log the reset
+
+        # Reset counters for the new run
         old_global_count = self.global_frame_index
         self.global_frame_index = 0
         self.file_frame_index = 0
         if hasattr(self, 'saved_frame_count'):
             self.saved_frame_count = 0
-        
+
         if old_global_count > 0:
             display(f"Frame count reset: {old_global_count} frames reset to 0 for new save location: {complete_filepath}")
+
+        # Clear the run closed flag to allow immediate restart (Issue 1 fix)
+        self.is_run_closed.clear()
+
+        # Try to pre-open the file handler if cam_info is available (Issue 2 fix)
+        # This moves file opening overhead out of the critical path
+        if self._cam_info:
+            self._init_file_handler(frame=None)
+
         
+    def set_cam_info(self, **kwargs):
+        """Set camera information for pre-initialization of file handlers."""
+        self._cam_info.update(kwargs)
+
     def get_complete_filepath(self, filepath):
         """Adds the extension, checks that the filepath is available.
         If not, checks the next available filepath using an unpadded index:
@@ -225,8 +255,24 @@ class FileWriter(Process):
             self.global_frame_index += 1
 
 
-    def _init_file_handler(self, frame):
-        """open file generic"""
+    def _init_file_handler(self, frame=None):
+        """open file generic. Prioritizes pre-set camera info, falls back to frame if provided."""
+        # If frame is provided, update cam_info with relevant details
+        if frame is not None:
+            # Try to infer shape, dtype, ndim, etc.
+            if hasattr(frame, 'shape'):
+                self._cam_info['shape'] = frame.shape
+            if hasattr(frame, 'dtype'):
+                self._cam_info['dtype'] = frame.dtype
+            if hasattr(frame, 'ndim'):
+                self._cam_info['ndim'] = frame.ndim
+            if hasattr(frame, 'n_channels'): # Custom attribute for some cameras
+                self._cam_info['n_channels'] = frame.n_channels
+            elif frame.ndim == 3: # Default for color images
+                self._cam_info['n_channels'] = frame.shape[2]
+            else:
+                self._cam_info['n_channels'] = 1
+
         # For rollover, generate a new complete path based on the current base
         if (self.frames_per_file > 0 and
             getattr(self, 'saved_frame_count', 0) > 0 and
@@ -245,17 +291,18 @@ class FileWriter(Process):
             except Exception as e:
                 print(f"Could not create folder {folder} : {e}")
         
-        # Open timestamp log on first frame (after directory is created)
-        if self.saved_frame_count == 0 and self.ts_file_handler is None:
+        # Open timestamp log on first frame or if not yet opened
+        if self.ts_file_handler is None:
             self._open_ts_log()
             
         # Close previous file **only** (keep timelog open across rollovers)
         self._release_file_handler()
         # Open new file handler
-        self.file_handler = self._get_file_handler(current_filepath, frame)
+        # Pass cam_info to _get_file_handler
+        self.file_handler = self._get_file_handler(current_filepath, cam_info=self._cam_info, frame=frame)
 
         
-    def _get_file_handler(self, filepath, frame):
+    def _get_file_handler(self, filepath, cam_info=None, frame=None):
         """get specific file handler"""
         pass
         
@@ -344,6 +391,7 @@ class FileWriter(Process):
                 if (self.file_handler is None or
                     (self.frames_per_file > 0 and np.mod(self.saved_frame_count,
                                                     self.frames_per_file)==0)):
+                    # Pass frame to _init_file_handler for initial cam_info population
                     self._init_file_handler(frame)
                 frameid, timestamp = metadata[:2]
                 try:
@@ -361,6 +409,7 @@ class FileWriter(Process):
             if (self.file_handler is None or
                 (self.frames_per_file > 0 and np.mod(self.saved_frame_count,
                                                    self.frames_per_file)==0)):
+                # Pass frame to _init_file_handler for initial cam_info population
                 self._init_file_handler(frame)
             frameid, timestamp = metadata[:2] 
             try:
@@ -393,7 +442,7 @@ class TiffWriter(FileWriter):
                          frames_per_file=frames_per_file)
         
 
-    def _get_file_handler(self,filepath,frame = None):
+    def _get_file_handler(self,filepath, cam_info=None, frame = None):
         display('Opening: '+ filepath)
         return twriter(filepath)
 
@@ -410,18 +459,30 @@ class BinaryWriter(FileWriter):
                          frames_per_file=frames_per_file,
                          extension = 'dat')
         
-    def _get_file_handler(self,filepath,frame = None):
-        dtype = frame.dtype
-        if dtype == np.float32:
-            dtype='float32'
-        elif dtype == np.uint8:
-            dtype='uint8'
+    def _get_file_handler(self,filepath, cam_info=None, frame = None):
+        # Prioritize cam_info if available
+        if cam_info and 'dtype' in cam_info and 'shape' in cam_info and 'n_channels' in cam_info:
+            dtype = cam_info['dtype']
+            shape = cam_info['shape']
+            n_chan = cam_info['n_channels']
+        elif frame is not None:
+            dtype = frame.dtype
+            shape = frame.shape
+            n_chan = frame.shape[2] if frame.ndim == 3 else 1
         else:
-            dtype='uint16'
-        filepath = filepath.format(n_chan = frame.shape[2],
-                                        W = frame.shape[1],
-                                        H = frame.shape[0],
-                                    dtype = dtype)
+            raise ValueError("[BinaryWriter] Need frame or cam_info to open a file.")
+
+        if dtype == np.float32:
+            dtype_str = 'float32'
+        elif dtype == np.uint8:
+            dtype_str = 'uint8'
+        else:
+            dtype_str = 'uint16'
+            
+        filepath = filepath.format(n_chan = n_chan,
+                                        W = shape[1],
+                                        H = shape[0],
+                                    dtype = dtype_str)
         display('Opening: '+ filepath)
         return open(filepath,'wb')
         
@@ -491,26 +552,37 @@ class FFMPEGWriter(FileWriter):
         if hasattr(cam,'nchan'):
             self.nchannels = cam.nchan
 
-    def _get_file_handler(self,filepath,frame = None):
-        if frame is None:
-            raise ValueError('[Recorder] Need to pass frame to open a file.')
-        if self.frame_rate is None:
-            self.frame_rate = 0
-        if self.frame_rate == 0:
+    def _get_file_handler(self,filepath, cam_info=None, frame = None):
+        # Prioritize cam_info if available
+        if cam_info and 'frame_rate' in cam_info and 'shape' in cam_info:
+            frame_rate = cam_info['frame_rate']
+            shape = cam_info['shape']
+            dtype = cam_info['dtype']
+            n_channels = cam_info['n_channels']
+        elif frame is not None:
+            frame_rate = self.frame_rate # From instance variable
+            shape = frame.shape
+            dtype = frame.dtype
+            n_channels = frame.shape[2] if frame.ndim == 3 else 1
+        else:
+            raise ValueError('[FFMPEGWriter] Need frame or cam_info to open a file.')
+
+        if frame_rate is None or frame_rate <= 0:
             display('Using 30Hz frame rate for ffmpeg')
-            self.frame_rate = 30
+            frame_rate = 30
         
-        self.doutputs['-r'] =str(self.frame_rate)
-        self.dinputs = {'-r':str(self.frame_rate)}
+        self.doutputs['-r'] =str(frame_rate)
+        self.dinputs = {'-r':str(frame_rate)}
         
         # does a check for the datatype, if uint16 then save compressed lossless
-        if frame.dtype in [np.uint16] and len(frame.shape) == 2:
+        # Use dtype and n_channels from cam_info/frame for logic
+        if dtype in [np.uint16] and n_channels == 1: # Assuming 2D for uint16 if n_channels is 1
             filepath = filepath.rsplit(".",1)[0] + '.mov'
             inputdict={'-pix_fmt':'gray16le',
-                      '-r':str(self.frame_rate)} # this is important
+                      '-r':str(frame_rate)} # this is important
             outputdict={'-c:v':'libopenjpeg',
                        '-pix_fmt':'gray16le',
-                       '-r':str(self.frame_rate)}
+                       '-r':str(frame_rate)}
         else:
             inputdict=self.dinputs
             outputdict=self.doutputs
@@ -546,21 +618,35 @@ class OpenCVWriter(FileWriter):
         # Do NOT touch the timelog here
 
 
-    def _get_file_handler(self,filepath,frame = None):
-        self.w = frame.shape[1]
-        self.h = frame.shape[0]
-        is_color = frame.ndim == 3 and frame.shape[2] == 3
+    def _get_file_handler(self,filepath, cam_info=None, frame = None):
+        # Prioritize cam_info if available
+        if cam_info and 'shape' in cam_info and 'frame_rate' in cam_info and 'n_channels' in cam_info:
+            w = cam_info['shape'][1]
+            h = cam_info['shape'][0]
+            is_color = cam_info['n_channels'] == 3
+            frame_rate = cam_info['frame_rate']
+        elif frame is not None:
+            w = frame.shape[1]
+            h = frame.shape[0]
+            is_color = frame.ndim == 3 and frame.shape[2] == 3
+            frame_rate = self.frame_rate # From instance variable
+        else:
+            raise ValueError('[OpenCVWriter] Need frame or cam_info to open a file.')
 
-        if not self.frame_rate or self.frame_rate < 1:
-            self.frame_rate = 30
+        # Update instance variables if they are not set or are zero
+        if self.w is None or self.w == 0: self.w = w
+        if self.h is None or self.h == 0: self.h = h
+
+        if not frame_rate or frame_rate < 1:
+            frame_rate = 30
             
         display('Opening: '+ filepath)
-        writer = cv2.VideoWriter(filepath, self.fourcc, self.frame_rate,(self.w,self.h), is_color)
+        writer = cv2.VideoWriter(filepath, self.fourcc, frame_rate,(self.w,self.h), is_color)
         if not writer.isOpened():
             display(f"OpenCV VideoWriter failed to open for {filepath} with fourcc={self.fourcc}. Trying MJPG...", level='warning')
             # Fallback to MJPG
             mjpg = cv2.VideoWriter_fourcc(*'MJPG')
-            writer = cv2.VideoWriter(filepath, mjpg, self.frame_rate,(self.w,self.h), is_color)
+            writer = cv2.VideoWriter(filepath, mjpg, frame_rate,(self.w,self.h), is_color)
             if not writer.isOpened():
                 display(f"OpenCV VideoWriter still failed to open for {filepath}.", level='error')
         return writer

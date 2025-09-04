@@ -6,7 +6,7 @@
             "serial_number": "H2260415",
             "params": {
                 "exposure": 1500,
-                "frame_rate": 30,
+                "frame_rate": 40,
                 "verbose": true
             }
         },
@@ -15,7 +15,7 @@
             "driver": "avt",
             "serial_number": "50-0537068788",
             "params": {
-              "frame_rate": 30,
+              "frame_rate": 40,
               "exposure_auto": "Off",
               "exposure": 500,
               "trigger_mode": "Off",

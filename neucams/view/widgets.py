@@ -330,21 +330,29 @@ class NeuCamsWindow(QMainWindow):
         if not run_spec:
             return
 
+        if self._any_camera_running():
+            QMessageBox.warning(
+                self,
+                'UDP Command Error',
+                'Cannot change run name while cameras are active. Please stop all cameras first.'
+            )
+            return
+
         display(f"UDP command received: Set run name to '{run_spec}' (no auto-start).")
 
-        # 1) Stop any running acquisition
-        if self._any_camera_running():
-            self.actionMasterStartStop.setChecked(False) # This will trigger _master_toggled to stop all
+        # # 1) Stop any running acquisition (REMOVED: Now handled by preventing the command if running)
+        # if self._any_camera_running():
+        #     self.actionMasterStartStop.setChecked(False) # This will trigger _master_toggled to stop all
 
-        # 2) Wait for all cameras to be fully stopped
-        t0 = time.time()
-        while not self._all_cameras_stopped() and (time.time() - t0 < 5.0):
-            QApplication.processEvents() # Allow UI to process the stop events
-            time.sleep(0.05)
-        
-        if not self._all_cameras_stopped():
-            display("UDP: Timed out waiting for cameras to stop. Path not changed.", level='warning')
-            return
+        # # 2) Wait for all cameras to be fully stopped (REMOVED: No longer need to wait if prevented)
+        # t0 = time.time()
+        # while not self._all_cameras_stopped() and (time.time() - t0 < 5.0):
+        #     QApplication.processEvents() # Allow UI to process the stop events
+        #     time.sleep(0.05)
+        # 
+        # if not self._all_cameras_stopped():
+        #     display("UDP: Timed out waiting for cameras to stop. Path not changed.", level='warning')
+        #     return
 
         # 3) Update UI textbox and apply the new run name to camera handlers
         self.run_name_edit.setText(run_spec)
@@ -363,6 +371,11 @@ class NeuCamsWindow(QMainWindow):
     def _handle_master_start_via_udp(self, address):
         """Handle UDP 'start' command - master start all cameras."""
         if self._all_cameras_running():
+            QMessageBox.warning(
+                self,
+                'UDP Command Error',
+                'Cameras are already running. Please stop them before sending a new start command.'
+            )
             display(f'UDP start command received but cameras already running [{address}]')
             self.server.send('ok=already_running', address)
             return
@@ -929,11 +942,16 @@ class CamWidget(BaseCameraWidget):
         current_frame = self.cam_handler.total_frames.value
         dt = current_time - self._prev_time
         df = current_frame - self._prev_frame_nr
-        if dt >= 0.5 and df > 0:
-            fps = df / dt
-            self._fps_deque.append(fps)
-            avg_fps = np.mean(self._fps_deque)
-            self.fps_label.setText(f"{avg_fps:.1f} fps")
+        if dt >= 0.2: # Always check after 0.2s
+            if df > 0:
+                fps = df / dt
+                self._fps_deque.append(fps)
+                avg_fps = np.mean(self._fps_deque)
+                self.fps_label.setText(f"{avg_fps:.1f} fps")
+            else:
+                # If no frames arrived, set FPS to 0.0
+                self.fps_label.setText("0.0 fps")
+
             self._prev_time = current_time
             self._prev_frame_nr = current_frame
         self.frame_nr_label.setText(f"frame: {current_frame}")
