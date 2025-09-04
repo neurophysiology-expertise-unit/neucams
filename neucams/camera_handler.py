@@ -152,7 +152,7 @@ class CameraHandler(Process):
             if not hasattr(self, "frame"):
                 ok = self._init_framebuffer()
                 if not ok:            # Let _init_framebuffer() return True/False
-                    display("Camera not ready—handler exiting.", level="error")
+                    display("Camera not ready-handler exiting.", level="error")
                     return
 
             self._init_buffer()

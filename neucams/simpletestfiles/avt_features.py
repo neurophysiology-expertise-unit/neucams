@@ -272,13 +272,13 @@ def main():
         # Camera (remote) features
         if args.module in ("camera", "all"):
             with cam:
-                dump_features(cam, f"Camera (Remote Device) Features — {cam.get_name()} [{cam.get_id()}]",
+                dump_features(cam, f"Camera (Remote Device) Features - {cam.get_name()} [{cam.get_id()}]",
                               names_only=args.names, collector=rows, module_name="camera")
 
         # Interface features
         if args.module in ("interface", "all"):
             iface = cam.get_interface()
-            dump_features(iface, f"Interface Features — {iface.get_name()} [{iface.get_id()}]",
+            dump_features(iface, f"Interface Features - {iface.get_name()} [{iface.get_id()}]",
                           names_only=args.names, collector=rows, module_name="interface")
 
         # Stream features
@@ -286,7 +286,7 @@ def main():
             with cam:
                 streams = cam.get_streams()
                 if streams:
-                    dump_features(streams[0], f"Stream Features — stream[0] of {cam.get_id()}",
+                    dump_features(streams[0], f"Stream Features - stream[0] of {cam.get_id()}",
                                   names_only=args.names, collector=rows, module_name="stream")
                 else:
                     print("\n(no streams reported)")
@@ -295,7 +295,7 @@ def main():
         if args.module in ("local", "all"):
             with cam:
                 local = cam.get_local_device()
-                dump_features(local, f"LocalDevice Features — {cam.get_id()}",
+                dump_features(local, f"LocalDevice Features - {cam.get_id()}",
                               names_only=args.names, collector=rows, module_name="local")
 
         # Exports

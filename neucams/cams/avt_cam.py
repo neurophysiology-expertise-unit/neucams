@@ -166,7 +166,7 @@ class AVTCam(GenericCam):
             "buffer_count": 20,             # for async start_streaming()
             # logging
             "verbose": None,
-            # legacy alias (UI may still set it) — we won't expose it as a param anymore
+            # legacy alias (UI may still set it) - we won't expose it as a param anymore
             "triggered": None,
         }
         fmt = {"dtype": np.uint8}
@@ -484,7 +484,7 @@ class AVTCam(GenericCam):
         if _has(self.cam_handle, "ReverseY"):
             apply("ReverseY", bool(P.get("reverse_y", False)))
 
-        # ---- Trigger vs free-run — SINGLE source of truth = trigger_mode ----
+        # ---- Trigger vs free-run - SINGLE source of truth = trigger_mode ----
         # Accept legacy alias 'triggered' only as an override when explicitly set.
         use_trigger = (str(P.get("trigger_mode", "Off")).strip().lower() == "on")
         if p.get("triggered") is not None:  # legacy UI

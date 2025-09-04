@@ -265,7 +265,7 @@ class GenICam(GenericCam):
             display(f"[GenICam {self.cam_id}] Ready: {w}x{h} n_chan=1 dtype=uint8")
             return
 
-        # Fallback (rare) – only if already free-running
+        # Fallback (rare) - only if already free-running
         try:
             frame, _ = self.image()
             if frame is not None and frame.size:

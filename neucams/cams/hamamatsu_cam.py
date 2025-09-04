@@ -1,4 +1,4 @@
-# neucams/cams/hamamatsu_cam.py — pyDCAM-backed Hamamatsu driver (lean, AVT-style)
+# neucams/cams/hamamatsu_cam.py - pyDCAM-backed Hamamatsu driver (lean, AVT-style)
 from __future__ import annotations
 import time
 from typing import List, Optional, Tuple, Dict, Any

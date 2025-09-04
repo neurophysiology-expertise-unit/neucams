@@ -46,6 +46,10 @@ class UDPSocket:
             return True, msg.decode('utf-8', errors='replace'), address
         except socket.timeout:
             return False, None, None
+        except ConnectionResetError:
+            # Windows-specific "ICMP port unreachable" noise for UDP
+            return False, None, None
+
 
     def send(self, msg, address):
         self.socket.sendto(str(msg).encode('ascii', 'ignore'), address)

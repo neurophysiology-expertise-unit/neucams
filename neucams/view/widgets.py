@@ -217,7 +217,7 @@ class NeuCamsWindow(QMainWindow):
         self._update_record_controls_enabled()
 
         # ------------------------------------------------------------------
-        # Optional UDP server (one per process) — gated by udp_enable flag
+        # Optional UDP server (one per process) - gated by udp_enable flag
         # ------------------------------------------------------------------
         server_params = self.preferences.get('server_params', None)
         if (server_params and isinstance(server_params, dict)
@@ -324,13 +324,13 @@ class NeuCamsWindow(QMainWindow):
             logging.getLogger().warning(f"UDP server could not be initialized: {e}")
 
 
-    def _handle_set_run_via_udp_and_start(self, run_spec: str):
-        """Stops all cameras, sets the run name, and triggers Master Start."""
+    def _handle_set_run_via_udp(self, run_spec: str):
+        """Stops all cameras and sets the run name (but does NOT auto-start)."""
         run_spec = (run_spec or "").strip()
         if not run_spec:
             return
 
-        display(f"UDP command received: Set run name to '{run_spec}' and start.")
+        display(f"UDP command received: Set run name to '{run_spec}' (no auto-start).")
 
         # 1) Stop any running acquisition
         if self._any_camera_running():
@@ -343,7 +343,7 @@ class NeuCamsWindow(QMainWindow):
             time.sleep(0.05)
         
         if not self._all_cameras_stopped():
-            display("UDP: Timed out waiting for cameras to stop. Aborting start.", level='warning')
+            display("UDP: Timed out waiting for cameras to stop. Path not changed.", level='warning')
             return
 
         # 3) Update UI textbox and apply the new run name to camera handlers
@@ -351,13 +351,50 @@ class NeuCamsWindow(QMainWindow):
         self._apply_run_name_to_cameras(run_spec)
         self._update_global_path_label()
 
-        # 4) Start master acquisition
-        self.actionMasterStartStop.setChecked(True) # This will trigger _master_toggled to start all
+        QMessageBox.information(
+            self,
+            'UDP Path Set',
+            f'New path set to: {run_spec}\n'
+            f'Frame counters reset to 0 for new session.\n'
+            f'Use \"start\" command to begin acquisition.'
+        )
 
-        # 5) Show confirmation popup
-        QMessageBox.information(self, 
-            'UDP Command Executed', 
-            f'Stopped all cameras, set run name to "{run_spec}", and started acquisition.')
+
+    def _handle_master_start_via_udp(self, address):
+        """Handle UDP 'start' command - master start all cameras."""
+        if self._all_cameras_running():
+            display(f'UDP start command received but cameras already running [{address}]')
+            self.server.send('ok=already_running', address)
+            return
+
+        # NEW: don't flip the button if master control is disabled (mixed state, etc.)
+        if not self.actionMasterStartStop.isEnabled():
+            display(f'UDP start ignored: Master control not available [{address}]')
+            self.server.send('error=master_disabled', address)
+            return
+
+        display(f'UDP master start command received [{address}]')
+        self.actionMasterStartStop.setChecked(True)  # Triggers _master_toggled
+        self.server.send('ok=start', address)
+
+
+    def _handle_master_stop_via_udp(self, address):
+        """Handle UDP 'stop' command - master stop all cameras."""
+        if self._all_cameras_stopped():
+            display(f'UDP stop command received but cameras already stopped [{address}]')
+            self.server.send('ok=already_stopped', address)
+            return
+
+        # NEW: don't flip the button if master control is disabled (mixed state, etc.)
+        if not self.actionMasterStartStop.isEnabled():
+            display(f'UDP stop ignored: Master control not available [{address}]')
+            self.server.send('error=master_disabled', address)
+            return
+
+        display(f'UDP master stop command received [{address}]')
+        self.actionMasterStartStop.setChecked(False)  # Triggers _master_toggled
+        self.server.send('ok=stop', address)
+
 
 
     def _process_server_messages(self):
@@ -369,10 +406,17 @@ class NeuCamsWindow(QMainWindow):
             return
 
         raw = (msg or "").strip()
-        # If the message has no '=', treat it as the run name directly
-        if raw and ('=' not in raw):
-            self._handle_set_run_via_udp_and_start(raw)
-            self.server.send('ok=setrun_and_start', address)
+        # Handle special UDP commands first
+        if raw.lower() == 'start':
+            self._handle_master_start_via_udp(address)
+            return
+        elif raw.lower() == 'stop':
+            self._handle_master_stop_via_udp(address)
+            return
+        # If the message has no '=' and is not start/stop, treat it as run name
+        elif raw and ('=' not in raw):
+            self._handle_set_run_via_udp(raw)
+            self.server.send('ok=setrun', address)
             return
 
         # key=value format
@@ -415,7 +459,7 @@ class NeuCamsWindow(QMainWindow):
 
         elif action in ('setrun', 'run', 'name'):
             run_value = value[0] if value else ''
-            self._handle_set_run_via_udp_and_start(run_value)
+            self._handle_set_run_via_udp(run_value)
             display(f'Run name set via UDP: {run_value} [{address}]')
             self.server.send('ok=setrun', address)
 
@@ -529,13 +573,20 @@ class NeuCamsWindow(QMainWindow):
         Cameras that do not recognize it will safely ignore it in apply_params()."""
         want_on = self.trigger_master_check.isChecked()
         val = 'On' if want_on else 'Off'
+        
+        # Collect cameras that can't be triggered for popup warning
+        unsupported_cameras = []
+        
         for w in self.cam_widgets:
             ch = w.cam_handler
             try:
                 # Skip Dalsa/GenICam cameras entirely from global trigger control
                 driver = ch.cam_dict.get('driver', '').lower()
+                cam_description = ch.cam_dict.get('description', 'unknown')
+                
                 if driver == 'genicam':
-                    display(f"Skipping trigger setting for Dalsa camera '{ch.cam_dict.get('description', 'unknown')}' - not supported")
+                    display(f"Skipping trigger setting for Dalsa camera '{cam_description}' - not supported")
+                    unsupported_cameras.append(f"{cam_description} (Dalsa/GenICam)")
                     continue
                 
                 # Optional guard using capability flag when available
@@ -544,6 +595,11 @@ class NeuCamsWindow(QMainWindow):
                     supported = bool(getattr(ch, 'trigger_supported', None).value)
                 except Exception:
                     supported = True  # best-effort
+                    
+                if not supported:
+                    unsupported_cameras.append(f"{cam_description} ({driver})")
+                    continue
+                    
                 if supported:
                     ch.set_cam_param('trigger_mode', val)
             except Exception:
@@ -554,6 +610,13 @@ class NeuCamsWindow(QMainWindow):
                     w.trigger_checkBox.setChecked(want_on)
             except Exception:
                 pass
+        
+        if unsupported_cameras and want_on:
+            camera_list = ', '.join(unsupported_cameras)
+            display(f"Trigger not supported for: {camera_list}. They remain in free-run mode.")
+        elif unsupported_cameras and not want_on:
+            display(f"Trigger disabled. Note: {len(unsupported_cameras)} camera(s) don't support triggering anyway.")
+
 
     # ------------------------------------------------------------------
     # Global run name helpers
@@ -639,26 +702,37 @@ class NeuCamsWindow(QMainWindow):
         name = self.run_name_edit.text().strip()
         if not name:
             return
+
+        # Block while any camera is running
         if self._any_camera_running():
             QMessageBox.warning(self, 'Cameras running', 'Stop all cameras before changing the save name.')
             return
-        
-        # Basic validation - check for invalid characters
+
+        # Basic validation - disallow Windows-invalid filename chars
         invalid_chars = ['<', '>', ':', '"', '|', '?', '*']
         if any(char in name for char in invalid_chars):
-            QMessageBox.warning(self, 'Invalid characters', 
-                              f'Path contains invalid characters: {", ".join(char for char in invalid_chars if char in name)}\n'
-                              'Please use only letters, numbers, underscores, hyphens, and forward slashes.')
+            QMessageBox.warning(
+                self,
+                'Invalid characters',
+                f'Path contains invalid characters: '
+                f'{", ".join(char for char in invalid_chars if char in name)}\n'
+                'Please use only letters, numbers, underscores, hyphens, and forward slashes.'
+            )
             return
-        
+
+        # Apply and refresh
         self._apply_run_name_to_cameras(name)
-        # Update record controls now that path is set
         self._update_record_controls_enabled()
-        # Show confirmation with path preview (camera_name placeholder)
-        df = self._get_data_folder() or ''
-        normalized_name = name.replace('\\', '/')
-        preview_path = join(df, "camera_name", normalized_name).replace('\\', '/')
-        QMessageBox.information(self, 'Save path updated', f'Save path set to:\n{preview_path}')
+        self._update_global_path_label()
+
+        # Minimal, accurate popup (no "frames saved" claims)
+        QMessageBox.information(
+            self,
+            'Save Path Updated',
+            f'New path set to: {name}\n'
+            f'Frame counters reset to 0 for new session.'
+        )
+
 
     def _apply_run_name_to_cameras(self, name: str):
         data_folder = self._get_data_folder()
@@ -686,6 +760,11 @@ class NeuCamsWindow(QMainWindow):
                 # Convert backslashes to forward slashes for consistent display
                 display_filepath = new_fp.replace('\\', '/')
                 w.save_location_label.setText('Filepath: ' + display_filepath)
+            
+            # Reset frame counter display for clarity
+            ch.total_frames.value = 0
+            if hasattr(w, "frame_nr_label"):
+                w.frame_nr_label.setText("frame: 0")
 
     # ------------------------------------------------------------------
     # Graceful shutdown

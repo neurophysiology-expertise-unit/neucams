@@ -1,6 +1,6 @@
-# NeuCams — Configure Cameras via JSON
+# NeuCams - Configure Cameras via JSON
 
-You configure **what matters** through a small, consistent JSON. Every key is **lowercase snake\_case**. Internally we translate to each SDK's naming so **you don't have to**. We intentionally expose a **curated subset** of features—because dumping 100 SDK knobs into JSON is pain and bugs.
+You configure **what matters** through a small, consistent JSON. Every key is **lowercase snake\_case**. Internally we translate to each SDK's naming so **you don't have to**. We intentionally expose a **curated subset** of features-because dumping 100 SDK knobs into JSON is pain and bugs.
 
 This README shows:
 
@@ -45,7 +45,7 @@ Each camera lives inside the top‑level `"cams"` list:
 
 ---
 
-## AVT (Allied Vision) — `driver: "avt"`
+## AVT (Allied Vision) - `driver: "avt"`
 
 *VmbPy 1.1.1 backend; deterministic FPS via bandwidth budgeting.*
 
@@ -117,7 +117,7 @@ Each camera lives inside the top‑level `"cams"` list:
 
 ---
 
-## Hamamatsu (Orca) — `driver: "hamamatsu"`
+## Hamamatsu (Orca) - `driver: "hamamatsu"`
 
 *pyDCAM backend; your model ignores gain controls.*
 
@@ -167,7 +167,7 @@ Each camera lives inside the top‑level `"cams"` list:
 
 ---
 
-## GenICam (e.g., Teledyne Dalsa) — `driver: "genicam"`
+## GenICam (e.g., Teledyne Dalsa) - `driver: "genicam"`
 
 *Harvester backend; **IMPORTANT: Trigger support is automatically disabled** for most Dalsa cameras.*
 
@@ -232,7 +232,7 @@ This is **hardcoded** in:
 
 ---
 
-## OpenCV (Webcams/Facecams) — `driver: "opencv"`
+## OpenCV (Webcams/Facecams) - `driver: "opencv"`
 
 *OpenCV backend for USB webcams, built-in laptop cameras, and external cameras.*
 
@@ -301,7 +301,7 @@ Frame count reset: 1250 frames reset to 0 for new save location: C:/data/camera1
 
 ## Gotchas & tips
 
-* **Always snake\_case** in JSON. Don't use SDK names like `AcquisitionFrameRateAbs`—use `frame_rate`.
+* **Always snake\_case** in JSON. Don't use SDK names like `AcquisitionFrameRateAbs`-use `frame_rate`.
 * **AVT deterministic FPS** depends on bandwidth. Weak links → drops (honest signal to fix NIC/switch/jumbos).
 * **Hamamatsu gain**: present for symmetry, ignored on your Orca model.
 * **Dalsa triggering**: **Completely disabled** - all Dalsa cameras operate in free-run mode only.

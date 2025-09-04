@@ -1,4 +1,4 @@
-# NeuCams — Build & Packaging Guide
+# NeuCams - Build & Packaging Guide
 
 This guide describes two ways to get **NeuCams** up and running:
 
@@ -16,14 +16,14 @@ This guide describes two ways to get **NeuCams** up and running:
 
 ## 1. Quick Start
 
-### 1.1 Option A — Install the pre-built offline package *(easiest)*
+### 1.1 Option A - Install the pre-built offline package *(easiest)*
 
 1. Download `NeuCams 1.0.0 windows x86_64.exe` from the latest GitHub release.
 2. **Run as Administrator** and pick an **empty** install directory (e.g. `C:\NeuCams`).
    *Untick* "Register NeuCams as system Python" unless you *really* need it.
 3. Launch NeuCams from the Start Menu shortcut, desktop shortcut **or** `C:\Program Files\NeuCams\NeuCams.exe` (or whatever folder you choose to install it).
 
-### 1.2 Option B — Run from source *(GitHub Repository)*
+### 1.2 Option B - Run from source *(GitHub Repository)*
 
 ```powershell
 # clone once
@@ -44,18 +44,18 @@ python -m neucams
 
 ## 2. Camera Setup
 
-### 2.1 USB Cameras (Webcams/Facecams) — *Plug & Play*
+### 2.1 USB Cameras (Webcams/Facecams) - *Plug & Play*
 
 **OpenCV-compatible cameras work immediately:**
 - Built-in laptop cameras
 - USB webcams  
 - External USB cameras
 
-**No additional setup required** — NeuCams will detect them automatically with camera IDs 0, 1, 2, etc.
+**No additional setup required** - NeuCams will detect them automatically with camera IDs 0, 1, 2, etc.
 
 Use the sample configuration `neucams/jsonfiles/webcam_facecam.json` to get started quickly.
 
-### 2.2 Ethernet Cameras (Professional) — *IP Configuration Required*
+### 2.2 Ethernet Cameras (Professional) - *IP Configuration Required*
 
 Whether you installed NeuCams via the **installer** *or* you're running from **source**, Ethernet cameras **won't show up** until the NIC ↔ camera IPs match. Follow these two steps for *every* NIC camera pair:
 
@@ -72,7 +72,7 @@ Whether you installed NeuCams via the **installer** *or* you're running from **s
 
 #### Assign persistent IPs to cameras
 
-1. Launch **mvIPConfigure** (Matrix Vision) — choose **Work as Administrator** if nothing appears.
+1. Launch **mvIPConfigure** (Matrix Vision) - choose **Work as Administrator** if nothing appears.
 2. Select a camera ▸ **Configure** ▸ tick **Use Persistent IP**.
 3. Set
 
@@ -106,10 +106,10 @@ Done! NeuCams should now list all devices automatically.
 
 | Symptom | Fix |
 |---------|-----|
-| Installer shows **"post\_install.bat failed"** | Merely cosmetic — if `NeuCams.exe` exists, you're fine. |
+| Installer shows **"post\_install.bat failed"** | Merely cosmetic - if `NeuCams.exe` exists, you're fine. |
 | NeuCams starts but **no cameras detected** | Install/repair **mvIMPACT Acquire** (IDS) *and* **Vimba X** (Allied Vision). Double check the IP settings above. |
 | **USB camera not detected** | Try different camera IDs in your config (0, 1, 2...). Check if camera works in other apps first. |
-| **Dalsa camera won't trigger** | **Expected behavior** — Dalsa cameras are hardcoded to free-run mode only. |
+| **Dalsa camera won't trigger** | **Expected behavior** - Dalsa cameras are hardcoded to free-run mode only. |
 | **Frame count doesn't reset** | Fixed in recent versions. Check terminal for "Frame count reset: X frames reset to 0" message. |
 | **Path shows backslashes** | Fixed in recent versions. All paths now display with forward slashes (`/`). |
 | **GENICAM\_GENTL64\_PATH** not persistent | Run the installer **as Administrator** or set the env var manually (point to the `.cti` files). |
@@ -182,10 +182,10 @@ Notes:
 ## 7. Configuration Files
 
 ### Pre-made Configurations:
-- `webcam_facecam.json` — USB cameras and webcams
-- `triple_camera.json` — Multi-camera professional setup  
-- `single_avt.json` — Single Allied Vision camera
-- `hamamatsu.json` — Hamamatsu Orca setup
+- `webcam_facecam.json` - USB cameras and webcams
+- `triple_camera.json` - Multi-camera professional setup  
+- `single_avt.json` - Single Allied Vision camera
+- `hamamatsu.json` - Hamamatsu Orca setup
 
 ### Creating Custom Configurations:
 See `jsonreadme.md` for complete parameter documentation and examples for each camera driver.
