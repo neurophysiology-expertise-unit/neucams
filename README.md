@@ -1,5 +1,6 @@
 
-# This repository is a version of Joao Couto's labcams repository (available at https://bitbucket.org/jpcouto/labcams). The name has changed to neucams, the intent is similar, but there are significant changes and a more compatible structure.
+# This repository is a version of Joao Couto's labcams repository (available at https://bitbucket.org/jpcouto/labcams). 
+The name has changed to neucams, the intent is similar, but there are significant changes and a more compatible structure.
 
 It's currently under work.
 
@@ -7,9 +8,9 @@ Changes include:
 
 * different repository structure
 * switch to Python 3
-* manufacturer interfaces are used as intended by the manufacturers
 * extensive rewrite
 * improved modularity and reliability
+* multi‑camera acquisition with per‑camera settings; synchronized start/stop where supported
 
 ------
 
@@ -18,37 +19,25 @@ Multicamera control and acquisition.
 
 This aims to facilitate video acquisition and automation of experiments, uses separate processes to record and store data.
 
-### Supported cameras -  [see instructions here](./camera_instructions.md):
+### Supported cameras
 
- * Allied Vision Technologies (via pymba)
- * PointGrey cameras (via PySpin)
- * QImaging cameras via the legacy driver (only windows)
- * PCO cameras (only windows)
- * Ximea cameras
+ * Allied Vision (AVT) via Vimba/VmbPy
+ * Teledyne Dalsa via GenICam/GenTL (free-run only; triggers disabled)
+ * Hamamatsu ORCA via DCAM-API (pyDCAM)
+ * USB webcams/facecams via OpenCV
 
 ### Features:
 
- *  Separates viewer, camera control/acquisition and file writer in different processes.
- *  Data from camera acquisition process placed on a queue.
- *  Display options: background subtraction; histogram equalization; pupil tracking via the [ mptracker ](https://bitbucket.org/jpcouto/mptracker).  
- *  Multiple buffers on Allied vision technologies cameras allows high speed data acquisition.
- * Online compression using ffmpeg (supports hardware acceleration)
+ *  Separate processes for viewer, capture, and file writing (stable at high FPS)
+ *  Real-time preview with background subtraction and histogram equalization
+ *  Multi-camera setups; hardware/software triggers where supported
+ *  Recording via TIFF, FFmpeg (H.264/H.265, optional HW accel), or OpenCV/AVI
+ *  Remote control over UDP (start/stop, soft trigger, set experiment name)
 
 
 ## Usage:
 
-Open a terminal and type ``labcams -h`` for help.
-
-### Command line options:
-
-|       |  command     | description |
-|-------|--------------|-------------|
-| ``-w``| ``--wait``   | start with software trigger OFF |
-| ``-t``| ``--triggered`` |  start with hardware trigger ON |
-| ``-c X Y`` | ``--cam-select X Y``     |  start only some cameras ``-c 0 1`` |
-| ``-d PATH`` | ``--make-config PATH``  |  create a configuration file |
-| | ``--no-server`` | do not start the ZMQ nor the UDP server |
-
+Launch NeuCams from the Start Menu (installer) or run: `python -m neucams`.
 
 ## Configuration files:
 
@@ -60,21 +49,27 @@ The configuration files are simple ``json`` files. There are 2 parts to the file
 
 Available camera drivers:
 
- * `PCO` - install pco.sdk
- * `AVT` - install Vimba SDK and pymba
- * `QImaging` 
- * `pointgrey` - FLIR cameras - install Spinnaker
- * `openCV` - webcams and so on
+ * `avt` - Allied Vision (Vimba/VmbPy runtime). Install Vimba SDK; VmbPy is bundled in the build.
+ * `genicam` - Teledyne Dalsa and other GenICam devices via a GenTL producer (e.g., Matrix Vision mvGenTL). Note: Dalsa runs free-run only; trigger control is disabled.
+ * `hamamatsu` - Hamamatsu ORCA via DCAM-API (pyDCAM). Windows-only; requires DCAM drivers.
+ * `opencv` - Webcams/USB cameras via OpenCV.
+
+Driver requirements (summary):
+
+- AVT: Install Allied Vision Vimba SDK (GigE/USB transport layers). Ensure `VimbaGigETL.cti`/`VimbaUSBTL.cti` available.
+- Dalsa/GenICam: Install a GenTL producer (e.g., Matrix Vision mvGenTL). Ensure `.cti` is discoverable (see `build_neucams/gentl/`).
+- Hamamatsu: Install DCAM-API (drivers + runtime). pyDCAM is used by the driver; runtime DLLs are included under `build_neucams/dcam/` in the installer.
+- OpenCV: Provided via Python dependency; no vendor SDK needed.
 
 Each camera has its own parameters, there are some parameters that are common to all:
 
 * `recorder` - the type of recorder `tiff` `ffmpeg` `opencv` `binary`
- * `haccel` - `nvidia` or `intel` for use with ffmpeg for compression.
+ * `haccel` - optional FFmpeg hardware acceleration: `nvidia` (NVENC) or `intel` (Media SDK/oneVPL)
 
-**NOTE:** You need to get ffmpeg compiled with `NVENC` from [here](https://developer.nvidia.com/ffmpeg) - precompiled versions are available - `conda install ffmpeg` works. Make sure to have python recognize it in the path (using for example `which ffmpeg` to confirm from git bash)/
+**NOTE:** For NVIDIA acceleration, use an FFmpeg build with `NVENC` support (many Windows conda builds include it). Ensure FFmpeg is on your PATH.
 
 
-**NOTE** To use `intel` acceleration you need to download the [mediaSDK](https://software.intel.com/content/www/us/en/develop/tools/media-sdk.html).
+**NOTE** For Intel acceleration, install Intel Media SDK/oneVPL and ensure FFmpeg can use it.
 
 
 2. **general parameters** to control the remote communication ports and general gui or recording parameters.
@@ -83,49 +78,45 @@ Each camera has its own parameters, there are some parameters that are common to
  * `recorder_path` the path of the recorder, how to handle substitutions - needs more info.
  
 
-3. Additional parameters:
+### UDP control
 
- * 'CamStimTrigger' - controls the arduino camera trigger, see the duino examples folder.
+``neucams`` listens for simple UDP commands.
 
+To enable, set both of the following in your config file:
 
-### UDP and ZMQ:
+- Under the root (or app-level) settings: ``"server":"udp"``
+- Under ``server_params``: ``"udp_enable": true`` and optionally ``"server_port": 9999``
 
-``neucams`` can listen for UDP or ZMQ commands.
+Example:
 
+```json
+"server": "udp",
+"server_params": {
+  "udp_enable": true,
+  "server_ip": "0.0.0.0",
+  "server_port": 9999,
+  "server_refresh_time": 30
+}
+```
 
-To configure use the command ``"server":"udp"`` in the end of the config file.
+Supported UDP messages:
 
-The port can be configured with ``"server_port":9999``
+ * Start acquisition and (optionally) recording: ``start``
+ * Stop acquisition and recording: ``stop``
+ * Set run/experiment name: send a single message with the desired name, e.g. ``mymouse_session01``
 
-The UDP commands are:
+Notes:
 
- * Set the experiment name ``expname=EXPERIMENT_NAME``
- * Software trigger the cameras ``softtrigger=1`` (multiple cameras are not in sync)
- * Hardware trigger mode and save ``trigger=1``
- * Start/stop saving ``manualsave=1``
- * Add a message to the log ``log=MESSAGE``
- * Quit ``quit``
+ * Messages are plain text. Unknown messages are ignored.
+ * If a message does not contain ``=`` and is not ``start``/``stop``, it is treated as the run name.
 
-**Please drop me a line for feedback and acknowledge if you use neucams in your work.**
+---
 
+### Credits and License
 
 Joao Couto - jpcouto@gmail.com
+See `LICENSE.txt` for licensing.
 
-May 2017
-
-
-
-## Debugging:
-
-### FFMPEG recordings with (realtime) nvidia encoding.
-
-To do this you need to have a version of ffmpeg compile with NVENC.
-
-If you have the error:
-
-   ``Unrecognized option 'cq:v'.``
-
-Make sure you have the version with NVENC, check with ``which ffmpeg`` which version is running
-
-
+This project has been substantially rewritten and is maintained here.
+Ahmet Cemal Öztürk - ozturk.ace@gmail.com
 
