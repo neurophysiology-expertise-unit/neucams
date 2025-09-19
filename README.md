@@ -1,122 +1,145 @@
 
-# This repository is a version of Joao Couto's labcams repository (available at https://bitbucket.org/jpcouto/labcams). 
-The name has changed to neucams, the intent is similar, but there are significant changes and a more compatible structure.
+# NeuCams README
 
-It's currently under work.
+## Overview
 
-Changes include:
+NeuCams is a multi-camera acquisition and recording framework supporting AVT, GenICam, Hamamatsu, and OpenCV cameras. Version 2.0 introduces **freerun mode** to eliminate camera warm-up delay and decouple initialization from actual recording.
 
-* different repository structure
-* switch to Python 3
-* extensive rewrite
-* improved modularity and reliability
-* multi‑camera acquisition with per‑camera settings; synchronized start/stop where supported
+***
 
-------
+## Features
 
+- Continuous freerun acquisition for instant readiness
+- Master Run trigger synchronizes saving across all cameras
+- Configurable per-camera parameters (exposure, frame rate, trigger source)
+- Multiple output formats: binary, TIFF, FFMPEG, OpenCV
+- PyQt5-based GUI with Record, Master Run, and Stop controls
+- Modular camera drivers via `CameraFactory`
 
-Multicamera control and acquisition.
+***
 
-This aims to facilitate video acquisition and automation of experiments, uses separate processes to record and store data.
+## Installation
 
-### Supported cameras
+1. Clone the repository:
 
- * Allied Vision (AVT) via Vimba/VmbPy
- * Teledyne Dalsa via GenICam/GenTL (free-run only; triggers disabled)
- * Hamamatsu ORCA via DCAM-API (pyDCAM)
- * USB webcams/facecams via OpenCV
+```bash
+git clone https://github.com/yourorg/neucams.git
+cd neucams
+```
 
-### Features:
+2. Create and activate a conda environment:
 
- *  Separate processes for viewer, capture, and file writing (stable at high FPS)
- *  Real-time preview with background subtraction and histogram equalization
- *  Multi-camera setups; hardware/software triggers where supported
- *  Recording via TIFF, FFmpeg (H.264/H.265, optional HW accel), or OpenCV/AVI
- *  Remote control over UDP (start/stop, soft trigger, set experiment name)
-
-
-## Usage:
-
-Launch NeuCams from the Start Menu (installer) or run: `python -m neucams`.
-
-## Configuration files:
-
-Configuration files ensure you always use the same parameters during your experiments.
-
-The configuration files are simple ``json`` files. There are 2 parts to the files.
-
-1. ``cams`` - **camera descriptions** - each camera has a section to store acquisition and recording parameters.
-
-Available camera drivers:
-
- * `avt` - Allied Vision (Vimba/VmbPy runtime). Install Vimba SDK; VmbPy is bundled in the build.
- * `genicam` - Teledyne Dalsa and other GenICam devices via a GenTL producer (e.g., Matrix Vision mvGenTL). Note: Dalsa runs free-run only; trigger control is disabled.
- * `hamamatsu` - Hamamatsu ORCA via DCAM-API (pyDCAM). Windows-only; requires DCAM drivers.
- * `opencv` - Webcams/USB cameras via OpenCV.
-
-Driver requirements (summary):
-
-- AVT: Install Allied Vision Vimba SDK (GigE/USB transport layers). Ensure `VimbaGigETL.cti`/`VimbaUSBTL.cti` available.
-- Dalsa/GenICam: Install a GenTL producer (e.g., Matrix Vision mvGenTL). Ensure `.cti` is discoverable (see `build_neucams/gentl/`).
-- Hamamatsu: Install DCAM-API (drivers + runtime). pyDCAM is used by the driver; runtime DLLs are included under `build_neucams/dcam/` in the installer.
-- OpenCV: Provided via Python dependency; no vendor SDK needed.
-
-Each camera has its own parameters, there are some parameters that are common to all:
-
-* `recorder` - the type of recorder `tiff` `ffmpeg` `opencv` `binary`
- * `haccel` - optional FFmpeg hardware acceleration: `nvidia` (NVENC) or `intel` (Media SDK/oneVPL)
-
-**NOTE:** For NVIDIA acceleration, use an FFmpeg build with `NVENC` support (many Windows conda builds include it). Ensure FFmpeg is on your PATH.
+```bash
+conda create -n neucams python=3.9 pyqt=5
+conda activate neucams
+pip install -r requirements.txt
+```
 
 
-**NOTE** For Intel acceleration, install Intel Media SDK/oneVPL and ensure FFmpeg can use it.
+***
 
+## Configuration
 
-2. **general parameters** to control the remote communication ports and general gui or recording parameters.
+Define cameras in a JSON file (e.g. `camera_preferences.json`). Each entry supports:
 
- * `recorder_frames_per_file` number of frames per file
- * `recorder_path` the path of the recorder, how to handle substitutions - needs more info.
- 
-
-### UDP control
-
-``neucams`` listens for simple UDP commands.
-
-To enable, set both of the following in your config file:
-
-- Under the root (or app-level) settings: ``"server":"udp"``
-- Under ``server_params``: ``"udp_enable": true`` and optionally ``"server_port": 9999``
+- `driver`: “avt”, “genicam”, “hamamatsu”, or “opencv”
+- `id`: numeric camera index
+- `serial`: serial number for identification
+- `freerun`: `true` to start continuous acquisition on Record
+- `params`: camera-specific parameters
 
 Example:
 
 ```json
-"server": "udp",
-"server_params": {
-  "udp_enable": true,
-  "server_ip": "0.0.0.0",
-  "server_port": 9999,
-  "server_refresh_time": 30
-}
+[
+  {
+    "driver": "avt",
+    "id": 0,
+    "serial": "12345678",
+    "freerun": true,
+    "params": {
+      "AcquisitionMode": "Continuous",
+      "FrameRate": 30,
+      "ExposureTime": 10000,
+      "TriggerSource": "Software"
+    }
+  },
+  {
+    "driver": "avt",
+    "id": 1,
+    "serial": "87654321",
+    "freerun": true,
+    "params": {
+      "AcquisitionMode": "Continuous",
+      "FrameRate": 30,
+      "ExposureTime": 10000,
+      "TriggerSource": "Software"
+    }
+  }
+]
 ```
 
-Supported UDP messages:
 
- * Start acquisition and (optionally) recording: ``start``
- * Stop acquisition and recording: ``stop``
- * Set run/experiment name: send a single message with the desired name, e.g. ``mymouse_session01``
+***
 
-Notes:
+## Usage
 
- * Messages are plain text. Unknown messages are ignored.
- * If a message does not contain ``=`` and is not ``start``/``stop``, it is treated as the run name.
+1. Launch the GUI:
 
----
+```bash
+python main.py --pref camera_preferences.json
+```
 
-### Credits and License
+2. In the GUI, press **Record**:
+    - Each freerun-enabled camera starts continuous acquisition but does not save frames.
+3. Press **Master Run**:
+    - All cameras begin saving buffered and incoming frames in sync.
+4. Press **Stop** to end acquisition.
 
-Joao Couto - jpcouto@gmail.com
-See `LICENSE.txt` for licensing.
+***
 
-This project has been substantially rewritten and is maintained here.
-Ahmet Cemal Öztürk - ozturk.ace@gmail.com
+## File Structure
+
+- `main.py`
+GUI launcher and preference parsing.
+- `camera_handler.py`
+Handles camera initialization, freerun mode, trigger logic, and acquisition loop.
+- `file_writer.py`
+Implements `BinaryWriter`, `TiffWriter`, `FFMPEGWriter`, and `OpenCVWriter`.
+- `utils.py`
+Display utilities, serial-number resolution, and logging.
+- `udp_socket.py`
+Real-time control messaging for remote start/stop.
+- `cams/`
+Individual camera driver modules (`avt_cam.py`, `genicam.py`, etc.).
+
+***
+
+## How It Works
+
+1. **Initialization**
+    - `CameraHandler` applies parameters and (if `freerun`) immediately calls `cam.start()`.
+2. **Record**
+    - UI calls `start_recording()`, which clears triggers and sets the handler ready flag.
+3. **Master Run**
+    - UI calls `master_run()`, setting `start_trigger`.
+    - Handlers unfreeze from `wait_for_trigger()`.
+    - If not freerun, they perform `cam.stop()`/`cam.start()`.
+    - All cameras begin writing frames in lockstep.
+4. **Stop**
+    - UI calls `stop()`, handlers cease acquisition and close writers.
+
+***
+
+## Notes
+
+- No changes are required in driver modules (`cams/avt_cam.py`, etc.).
+- To disable freerun, set `"freerun": false` or omit the key.
+- Ensure network bandwidth and disk I/O can handle your configured frame rates and resolutions.
+
+***
+
+## License
+
+MIT License. See `LICENSE` for details.
 
