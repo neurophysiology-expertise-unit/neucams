@@ -1,5 +1,16 @@
 {
     "cams": [
+              {
+            "description": "dalsa2",
+            "driver": "genicam",
+            "serial_number": "H2260415",
+            "params": {
+                "exposure": 1500,
+                "frame_rate": 40,
+                "verbose": true
+            }
+        },
+
       {
         "description": "MakoAVT",
         "driver": "avt",

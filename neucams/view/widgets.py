@@ -7,12 +7,15 @@ from os.path import dirname, join
 import logging
 from pathlib import Path
 
+
 import numpy as np
 from PyQt5 import uic
 from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtWidgets import (QAction, QApplication, QMainWindow, QMessageBox,
                              QMdiSubWindow)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+# Delay before starting cameras via Master Start (ms): allows writers to arm
+ARM_DELAY_MS = 3000
 from collections import deque
 
 from neucams.udp_socket import UDPSocket
@@ -407,8 +410,72 @@ class NeuCamsWindow(QMainWindow):
         display(f'UDP master stop command received [{address}]')
         self.actionMasterStartStop.setChecked(False)  # Triggers _master_toggled
         self.server.send('ok=stop', address)
+    # widgets.py
 
+    def _udp_apply_run_and_unlock(self, run_spec: str, address=None):
+        """Apply run name from UDP exactly like the GUI 'Set' button, then unlock Record."""
+        run_spec = str(run_spec).strip().strip('"').strip("'")
 
+        # show in the UI text box (so the user sees it too)
+        try:
+            self.run_name_edit.setText(run_spec)
+        except Exception:
+            pass
+
+        # Call the same handler the Set button uses (validates + applies to cameras)
+        try:
+            self._on_set_run_name()
+        except Exception as e:
+            display(f"[UDP] _on_set_run_name() failed: {e}", level="error")
+            # still try to continue so we can show diagnostics
+            # (you can 'return' here if you prefer to be strict)
+
+        # Make sure the Record checkbox(es) get enabled like the GUI would
+        try:
+            self._update_record_controls_enabled()
+        except Exception:
+            pass
+
+        # ---- DIAGNOSTICS: show base folder, run_spec, and each camera's final folder ----
+        try:
+            base = getattr(self.preferences, "recorder_params", {}).get("data_folder", "")
+        except Exception:
+            base = ""
+        # Collect what each camera will actually use
+        per_cam = []
+        for w in getattr(self, "cam_widgets", []):
+            ch = getattr(w, "cam_handler", None)
+            descr = ""
+            if ch and hasattr(ch, "cam_dict"):
+                descr = ch.cam_dict.get("description", "")
+            final_folder = None
+
+            # If your handler exposes a current folder string/array, use it:
+            if ch and hasattr(ch, "get_current_save_folder"):
+                try:
+                    final_folder = ch.get_current_save_folder()
+                except Exception:
+                    final_folder = None
+
+            # Fallback: expected path based on your app’s convention
+            if not final_folder:
+                if base and descr and run_spec:
+                    final_folder = os.path.normpath(os.path.join(base, descr, run_spec))
+                else:
+                    final_folder = "<unknown>"
+
+            per_cam.append((descr or "<cam>", final_folder))
+
+        display(f"[UDP] Applied run name: {run_spec!r} (base={base!r})", level="info")
+        for descr, folder in per_cam:
+            display(f"[UDP]   {descr}: {folder}", level="info")
+
+        # Optional ACK
+        try:
+            if address and getattr(self, "server", None):
+                self.server.send("ok=setrun", address)
+        except Exception:
+            pass
 
     def _process_server_messages(self):
         srv = getattr(self, 'server', None)
@@ -419,78 +486,109 @@ class NeuCamsWindow(QMainWindow):
             return
 
         raw = (msg or "").strip()
-        # Handle special UDP commands first
-        if raw.lower() == 'start':
-            self._handle_master_start_via_udp(address)
-            return
-        elif raw.lower() == 'stop':
-            self._handle_master_stop_via_udp(address)
-            return
-        # If the message has no '=' and is not start/stop, treat it as run name
-        elif raw and ('=' not in raw):
-            self._handle_set_run_via_udp(raw)
-            self.server.send('ok=setrun', address)
+        if not raw:
             return
 
-        # key=value format
+        # already working:
+        if raw.lower() == "start":
+            self._handle_master_start_via_udp(address); return
+        if raw.lower() == "stop":
+            self._handle_master_stop_via_udp(address); return
+
+        # Treat these as RUN NAME (session/run), not absolute folder:
+        if raw.upper().startswith("SET_PATH "):
+            run_spec = raw[9:].strip()
+            self._udp_apply_run_and_unlock(run_spec, address)
+            return
+
+        if raw.lower().startswith(("name=", "setrun=", "folder=")):
+            _, run_spec = raw.split("=", 1)
+            run_spec = run_spec.strip()
+            self._udp_apply_run_and_unlock(run_spec, address)
+            return
+
+        # Optional: status probe
+        if raw.lower() in ("status?", "whoami?"):
+            try:
+                base = getattr(self.preferences, "recorder_params", {}).get("data_folder", "")
+            except Exception:
+                base = ""
+            rn = ""
+            try:
+                rn = self.run_name_edit.text().strip()
+            except Exception:
+                pass
+            # quick record-enabled check
+            rec_enabled = False
+            for attr in ("record_checkbox", "recordCheckBox", "cb_record"):
+                cb = getattr(self, attr, None)
+                if cb is not None:
+                    try:
+                        rec_enabled = bool(cb.isEnabled())
+                        break
+                    except Exception:
+                        pass
+            msg_out = f"base={base}; run={rn}; record_enabled={rec_enabled}"
+            self.server.send(msg_out, address)
+            return
+
+        # Unknown
         try:
-            action, *value = [i.lower() for i in msg.split('=')]
+            self.server.send("err=unknown_cmd", address)
         except Exception:
-            return
+            pass
 
-        if action == 'ping':
-            display(f'Server got pinged [{address}]')
-            self.server.send('pong', address)
-
-        elif action == 'folder':
-            self._set_save_path(value)
-            display(f'Folder changed to {value} [{address}]')
-            self.server.send('ok=folder', address)
-
-        elif action == 'start':
-            display(f'Starting triggered cameras [{address}]')
-            for cam_widget in self.cam_widgets:
-                if getattr(cam_widget, 'is_triggered', False):
-                    cam_widget.start_cam()
-            self.server.send('ok=start', address)
-
-        elif action == 'stop':
-            display(f'Stopping triggered cameras [{address}]')
-            for cam_widget in self.cam_widgets:
-                if getattr(cam_widget, 'is_triggered', False):
-                    cam_widget.stop_cam()
-            self.server.send('ok=stop', address)
-
-        elif action == 'done?':
-            cam_descr = value[0] if value else ''
-            for cam_widget in self.cam_widgets:
-                if cam_widget.cam_handler.cam_dict.get('description') == cam_descr:
-                    status = cam_widget.cam_handler.is_acquisition_done.is_set()
-                    self.server.send(f'done?={status}', address)
-                    return
-            self.server.send('done?=camera not found', address)
-
-        elif action in ('setrun', 'run', 'name'):
-            run_value = value[0] if value else ''
-            self._handle_set_run_via_udp(run_value)
-            display(f'Run name set via UDP: {run_value} [{address}]')
-            self.server.send('ok=setrun', address)
-
-        elif action == 'quit':
-            display(f'Exiting [{address}]')
-            self.server.send('ok=bye', address)
-            self.close()
-
+        
     # ------------------------------------------------------------------
     # Utility helpers (unchanged)
     # ------------------------------------------------------------------
 
     def _set_save_path(self, save_path):
-        if os.path.sep == '/':
-            save_path = save_path.replace('\\', os.path.sep)
-        save_path = save_path.strip(' ')
-        for cam_widget in self.cam_widgets:
-            cam_widget.cam_handler.set_folder_path(save_path)
+        # Accept str | list | tuple; join tokens, strip quotes, expand vars, normalize
+        if isinstance(save_path, (list, tuple)):
+            save_path = " ".join(str(x) for x in save_path)
+        else:
+            save_path = str(save_path)
+
+        save_path = save_path.strip().strip('"').strip("'")
+        save_path = os.path.expandvars(save_path)
+        save_path = save_path.replace('/', os.sep)
+
+        # If relative, anchor it to the current UI folder (if any) or CWD
+        try:
+            current = self.dir_lineEdit.text().strip()
+        except Exception:
+            current = ""
+        base = current if current else os.getcwd()
+        if not os.path.isabs(save_path):
+            save_path = os.path.normpath(os.path.join(base, save_path))
+        else:
+            save_path = os.path.normpath(save_path)
+
+        # Ensure the folder exists
+        try:
+            os.makedirs(save_path, exist_ok=True)
+        except Exception as e:
+            display(f"Could not create folder {save_path}: {e}", level="error")
+
+        # Update UI (ignore if widget missing) and propagate to handlers/writers
+        try:
+            self.dir_lineEdit.setText(save_path)
+        except Exception:
+            pass
+
+        try:
+            for w in getattr(self, "cam_widgets", []):
+                ch = getattr(w, "cam_handler", None)
+                if ch is None:
+                    continue
+                if hasattr(ch, "set_save_path"):
+                    ch.set_save_path(save_path)
+                elif hasattr(ch, "writer") and ch.writer:
+                    ch.writer.set_filepath(save_path)
+            display(f"Save path set to: {save_path}")
+        except Exception as e:
+            display(f"Failed to set save path: {e}", level="warning")
 
     def _view_menu_actions(self, q):
         if q.text() == 'Subwindow View':
@@ -630,6 +728,56 @@ class NeuCamsWindow(QMainWindow):
         elif unsupported_cameras and not want_on:
             display(f"Trigger disabled. Note: {len(unsupported_cameras)} camera(s) don't support triggering anyway.")
 
+        # 1) after _set_save_path(save_path) succeeds, emulate pressing Set:
+    def _confirm_folder_set(self):
+        """
+        Call the same code path as the GUI 'Set' folder button so UI state updates
+        (enables Record, clears grayed state, etc.).
+        """
+        # If you have a concrete slot for the Set button, call it here:
+        try:
+            self.on_setDirBtn_clicked()     # <-- replace with your real slot name
+            return
+        except AttributeError:
+            pass
+
+        # Fallback: enable Record directly if there is no dedicated slot
+        for attr in ("record_checkbox", "recordCheckBox", "cb_record"):
+            cb = getattr(self, attr, None)
+            if cb is not None:
+                try:
+                    cb.setEnabled(True)
+                    cb.setToolTip("")
+                except Exception:
+                    pass
+                break
+        # Optional internal flag many apps use:
+        setattr(self, "_folder_is_set", True)
+
+
+    # 2) run-name helper you can call from UDP
+    def _apply_run_name(self, run_name: str):
+        run_name = str(run_name).strip().strip('"').strip("'")
+        # show in UI
+        for attr in ("name_lineEdit", "run_lineEdit", "le_run", "le_name"):
+            le = getattr(self, attr, None)
+            if le is not None:
+                try:
+                    le.setText(run_name)
+                except Exception:
+                    pass
+                break
+        # hit the same slot as the GUI Set-Name button, if present
+        for slot_name in ("on_setNameBtn_clicked", "on_btnSetName_clicked", "on_setRunBtn_clicked"):
+            slot = getattr(self, slot_name, None)
+            if callable(slot):
+                try:
+                    slot()
+                    return
+                except Exception:
+                    pass
+        # Fallback: if your code guards Record on a “name set” flag:
+        setattr(self, "_run_name_is_set", True)
 
     # ------------------------------------------------------------------
     # Global run name helpers
@@ -778,6 +926,8 @@ class NeuCamsWindow(QMainWindow):
             ch.total_frames.value = 0
             if hasattr(w, "frame_nr_label"):
                 w.frame_nr_label.setText("frame: 0")
+
+
 
     # ------------------------------------------------------------------
     # Graceful shutdown

@@ -277,6 +277,30 @@ class CameraHandler(Process):
         for i in range(len(folder_path)):
             self.folder_path_array[i] = folder_path[i]
     
+
+    def get_current_save_folder(self) -> str:
+        """Return the folder path this camera/writer will save into (best effort)."""
+        # If you keep a folder_path_array / save_folder attr, use that:
+        if hasattr(self, "folder_path_array"):
+            try:
+                s = str(self.folder_path_array[:]).strip()
+                if s:
+                    return s
+            except Exception:
+                pass
+
+        # If there is a writer with a full filepath, return its dirname
+        if hasattr(self, "writer") and self.writer:
+            try:
+                fp = self.writer.get_filepath()
+                if fp:
+                    return os.path.dirname(fp)
+            except Exception:
+                pass
+
+        return ""
+
+
     def get_new_filename(self):
         # date_run where run is not zero-padded
         return datetime.date.today().strftime('%y%m%d') + '_' + f"{self.run_nr}"
@@ -386,7 +410,20 @@ class CameraHandler(Process):
             pass
         # -----------------------------------------------------
 
+            
+        # Ensure writer is ready BEFORE starting the camera if recording is requested
         try:
+            if self.saving.is_set() and getattr(self, 'writer', None) is None:
+                try:
+                    self.writer = self._open_writer()
+                    # Give filesystem a tiny moment to finish opening handles
+                    time.sleep(0.01)
+                except ValueError as e:
+                    display(f"Cannot start recording: {e}", level='error')
+                    self.saving.clear()  # Abort recording for this run
+        except Exception as e:
+            display(f"Unexpected error while preparing writer: {e}", level='warning')
+        try:    
             if hasattr(self.cam, "start") and callable(self.cam.start):
                 self.cam.start()
         except Exception:
@@ -397,8 +434,6 @@ class CameraHandler(Process):
         if mode_triggered and src == "software" and hasattr(self.cam, "fire_software_trigger"):
             self.cam.fire_software_trigger()
         self.camera_ready.clear()
-
-
 
     def load_cam_settings(self, fpath):
         """Loads camera settings from a JSON file."""
@@ -528,6 +563,8 @@ class CameraHandler(Process):
         
     def stop_acquisition(self):
         self.stop_trigger.set()
+        self.start_trigger.clear()
+        
 
     def close(self):
         self.close_event.set()
