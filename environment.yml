@@ -82,3 +82,4 @@ dependencies:
     - genicam==1.4.0
     - harvesters==1.4.3
     - vmbpy==1.1.1
+    - pyDCAM==0.0.1
