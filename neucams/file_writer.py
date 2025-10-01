@@ -68,6 +68,7 @@ class FileWriter(Process):
         self.ts_file_handler = None
 
         # Timestamp normalization
+        self.master_t0_ns = None
         self._ts_offset = None
         self._ts_scale = None    # chosen from {1, 1e3, 1e6, 1e9} to convert to seconds
         self._ts_deltas = []     # collect a few deltas to infer scale robustly
@@ -90,6 +91,8 @@ class FileWriter(Process):
         self.close()
         self.join()
 
+    def set_master_t0_ns(self, t0_ns: int):
+        self.master_t0_ns = int(t0_ns)
     # ---------- Path API ----------
 
     def get_filepath(self):
@@ -177,30 +180,30 @@ class FileWriter(Process):
 
     # ---------- Timelog / timestamps ----------
 
+    # at the very top of file_writer.py (module level — keep it here, not inside a function)
+
+
     def _open_ts_log(self):
         """
-        Open a timelog named as: YYMMDD_HHMMSSmmm_0000X.txt
-        and make the data file's base match that exact basename.
+        Open a timelog named as YYMMDD_HHMMSSmmm_0000X.txt next to the data files.
+        Also publish that exact basename to the data path so TIFFs and timelog match.
+        Never crash the writer if anything goes wrong.
         """
         try:
-            # Resolve folder:
-            # - if base_filepath is a directory, use it directly
-            # - if it looks like a file path, use its dirname
+            # Resolve the folder from base_filepath (folder or file-base)
             base = getattr(self, 'base_filepath', '') or ''
             if base and (os.path.isdir(base) or base.endswith(os.sep)):
                 folder = base.rstrip(os.sep)
             else:
                 folder = dirname(base) or '.'
+            os.makedirs(folder, exist_ok=True)
 
-            # Ensure folder exists
-            if folder and not os.path.exists(folder):
-                os.makedirs(folder, exist_ok=True)
-
-            # Choose (or reuse) the run prefix and find next available 5-digit index
+            # Build (or reuse) run prefix, e.g. "250930_161650123"
             if not getattr(self, '_ts_run_prefix', None):
                 now = datetime.now()
                 self._ts_run_prefix = now.strftime("%y%m%d_%H%M%S") + f"{now.microsecond // 1000:03d}"
 
+            # Find next free 5-digit index → "..._00001.txt"
             i = 1
             while True:
                 candidate = f"{self._ts_run_prefix}_{i:05d}.txt"
@@ -209,19 +212,24 @@ class FileWriter(Process):
                     break
                 i += 1
 
-            # Open timelog
+            # Open the timelog FIRST, then write the header/metadata
             self.ts_file_handler = open(ts_path, 'w', encoding='utf-8')
             self.ts_file_handler.write('# frame_index\ttimestamp_seconds\n')
+            # Optional: write master t0 if present (does not re-import datetime)
+            if getattr(self, 'master_t0_ns', None) is not None:
+                t0_ns = float(self.master_t0_ns)
+                self.ts_file_handler.write(f'# master_t0_ns\t{int(t0_ns)}\n')
+                self.ts_file_handler.write(f'# master_t0_iso\t{datetime.fromtimestamp(t0_ns / 1e9).isoformat()}\n')
             self.ts_file_handler.flush()
 
-            # Derive & publish exact data basename from the TXT
-            run_basename = os.path.splitext(os.path.basename(ts_path))[0]   # e.g. "250926_135620177_00001"
+            # Publish the exact basename so data files match the timelog prefix
+            run_basename = os.path.splitext(os.path.basename(ts_path))[0]
             self._run_file_index = i
             data_base = join(folder, run_basename)
             self.base_filepath = data_base
             self.update_filepath_array(self.get_complete_filepath_exact(data_base))
 
-            # Reset run-wide timestamp state
+            # Reset timestamp state for this run
             self._ts_offset = None
             self._ts_scale = None
             self._ts_deltas = []
@@ -232,6 +240,55 @@ class FileWriter(Process):
         except Exception as e:
             display(f"Failed to open timestamp log in {folder}: {e}", level='warning')
             self.ts_file_handler = None
+
+    def _init_file_handler(self, frame=None):
+        """Open the data file for the current run; precreates folders; tolerates timelog failure."""
+        # If a frame is provided, update cam_info (shape/dtype/channels)
+        if frame is not None:
+            if hasattr(frame, 'shape'):
+                self._cam_info['shape'] = frame.shape
+            if hasattr(frame, 'dtype'):
+                self._cam_info['dtype'] = frame.dtype
+            if hasattr(frame, 'ndim'):
+                self._cam_info['ndim'] = frame.ndim
+            if hasattr(frame, 'n_channels'):
+                self._cam_info['n_channels'] = frame.n_channels
+            elif frame.ndim == 3:
+                self._cam_info['n_channels'] = frame.shape[2]
+            else:
+                self._cam_info['n_channels'] = 1
+
+        # Rollover (per-file frame limit)
+        if (self.frames_per_file > 0 and
+            getattr(self, 'saved_frame_count', 0) > 0 and
+            (self.saved_frame_count % self.frames_per_file) == 0):
+            if hasattr(self, 'base_filepath'):
+                new_path = self.get_complete_filepath(self.base_filepath)
+                self.update_filepath_array(new_path)
+
+        # Ensure parent folder exists
+        current_filepath = self.get_filepath()
+        folder = dirname(current_filepath) or '.'
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except Exception as me:
+            display(f"Could not create folder {folder}: {me}", level='error')
+
+        # Open / reuse the timelog, but NEVER die if this fails
+        if self.ts_file_handler is None:
+            try:
+                self._open_ts_log()
+            except Exception as e:
+                display(f"Timelog open raised unexpectedly: {e}", level='warning')
+                self.ts_file_handler = None
+
+        # Close previous data file (NOT the timelog) and open a fresh one
+        self._release_file_handler()
+        display(f"Opening: {current_filepath}")  # visible confirmation in console
+        self.file_handler = self._get_file_handler(
+            current_filepath, cam_info=self._cam_info, frame=frame
+        )
+
 
     def _release_ts_log(self):
         if self.ts_file_handler is not None:
@@ -273,12 +330,18 @@ class FileWriter(Process):
                 self._ts_deltas.append(d)
 
         # Decide scale once we have a few deltas
+        # Decide scale once we have a few deltas
         if self._ts_scale is None and len(self._ts_deltas) >= 3:
-            ds = sorted(self._ts_deltas[:10])
-            med = ds[len(ds)//2]
-            candidates = [1.0, 1e3, 1e6, 1e9]  # s, ms, µs, ns → to seconds
-            target = 0.01  # ~10 ms typical, robust enough
-            self._ts_scale = min(candidates, key=lambda c: abs((med / c) - target))
+            med = float(np.median(self._ts_deltas[-10:]))
+            if med > 1e6:
+                self._ts_scale = 1e9   # raw deltas ~ tens of millions → ns
+            elif med > 1e3:
+                self._ts_scale = 1e6   # raw deltas ~ tens of thousands → µs
+            elif med > 1.0:
+                self._ts_scale = 1e3   # raw deltas ~ tens → ms
+            else:
+                self._ts_scale = 1.0   # raw deltas already in seconds (Hamamatsu case)
+
 
         # If still unknown, buffer and return
         if self._ts_scale is None:

@@ -6,7 +6,7 @@
         "serial_number": "003024",
         "params": {
           "frame_rate": 30,
-          "trigger_source": "INTERNAL",
+          "trigger_source": "Off",
           "exposure": 20000.0,
           "binning": 1,
           "verbose": true

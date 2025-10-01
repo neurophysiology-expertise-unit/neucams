@@ -301,6 +301,8 @@ class NeuCamsWindow(QMainWindow):
     # ------------------------------------------------------------------
     # UDP helpers
     # ------------------------------------------------------------------
+    
+    
 
     def _init_udp_server(self, server_params: dict):
         ip = str(server_params.get('server_ip') or '0.0.0.0')
@@ -327,72 +329,118 @@ class NeuCamsWindow(QMainWindow):
             logging.getLogger().warning(f"UDP server could not be initialized: {e}")
 
 
-    def _handle_set_run_via_udp(self, run_spec: str):
-        """Stops all cameras and sets the run name (but does NOT auto-start)."""
-        run_spec = (run_spec or "").strip()
-        if not run_spec:
-            return
-
-        if self._any_camera_running():
-            QMessageBox.warning(
-                self,
-                'UDP Command Error',
-                'Cannot change run name while cameras are active. Please stop all cameras first.'
-            )
-            return
-
-        display(f"UDP command received: Set run name to '{run_spec}' (no auto-start).")
-
-        # # 1) Stop any running acquisition (REMOVED: Now handled by preventing the command if running)
-        # if self._any_camera_running():
-        #     self.actionMasterStartStop.setChecked(False) # This will trigger _master_toggled to stop all
-
-        # # 2) Wait for all cameras to be fully stopped (REMOVED: No longer need to wait if prevented)
-        # t0 = time.time()
-        # while not self._all_cameras_stopped() and (time.time() - t0 < 5.0):
-        #     QApplication.processEvents() # Allow UI to process the stop events
-        #     time.sleep(0.05)
-        # 
-        # if not self._all_cameras_stopped():
-        #     display("UDP: Timed out waiting for cameras to stop. Path not changed.", level='warning')
-        #     return
-
-        # 3) Update UI textbox and apply the new run name to camera handlers
-        self.run_name_edit.setText(run_spec)
-        self._apply_run_name_to_cameras(run_spec)
-        self._update_global_path_label()
-
-        QMessageBox.information(
-            self,
-            'UDP Path Set',
-            f'New path set to: {run_spec}\n'
-            f'Frame counters reset to 0 for new session.\n'
-            f'Use \"start\" command to begin acquisition.'
-        )
-
-
     def _handle_master_start_via_udp(self, address):
-        """Handle UDP 'start' command - master start all cameras."""
         if self._all_cameras_running():
-            QMessageBox.warning(
-                self,
-                'UDP Command Error',
-                'Cameras are already running. Please stop them before sending a new start command.'
-            )
             display(f'UDP start command received but cameras already running [{address}]')
             self.server.send('ok=already_running', address)
             return
 
-        # NEW: don't flip the button if master control is disabled (mixed state, etc.)
         if not self.actionMasterStartStop.isEnabled():
             display(f'UDP start ignored: Master control not available [{address}]')
             self.server.send('error=master_disabled', address)
             return
 
+        # Arm Record (optional; remove if you don't want this)
+        for w in self.cam_widgets:
+            cb = getattr(w, "record_checkBox", None)
+            if cb is not None and cb.isEnabled() and not cb.isChecked():
+                cb.setChecked(True)
+
+        try:
+            self._broadcast_trigger_setting()
+        except Exception:
+            pass
+
         display(f'UDP master start command received [{address}]')
-        self.actionMasterStartStop.setChecked(True)  # Triggers _master_toggled
+        self.actionMasterStartStop.setChecked(True)  # this triggers your normal start path
         self.server.send('ok=start', address)
 
+    def _log(self, msg: str):
+        """Safe UI+console log helper."""
+        try:
+            print(msg)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "status_bar") and self.status_bar:
+                self.status_bar.showMessage(msg, 4000)
+        except Exception:
+            pass
+
+    def _recv_udp_burst(self):
+        """
+        Return a list of (text, addr) from the UDP server without blocking.
+        Works with several UDPSocket APIs:
+        - receive_all() -> [(text, addr), ...]
+        - recvfrom_nowait() -> Optional[(text, addr)]
+        - recvfrom() nonblocking loop
+        - raw socket 'socket' attribute
+        """
+        out = []
+        srv = getattr(self, "server", None)
+        if srv is None:
+            return out
+
+        # 1) Newer API
+        if hasattr(srv, "receive_all"):
+            try:
+                items = srv.receive_all()
+                if items:
+                    out.extend(items)
+                return out
+            except Exception:
+                pass
+
+        # 2) recvfrom_nowait
+        if hasattr(srv, "recvfrom_nowait"):
+            try:
+                while True:
+                    item = srv.recvfrom_nowait()
+                    if not item:
+                        break
+                    out.append(item)
+            except Exception:
+                pass
+            return out
+
+        # 3) Non-blocking recvfrom loop
+        if hasattr(srv, "recvfrom"):
+            import socket
+            try:
+                while True:
+                    try:
+                        item = srv.recvfrom()
+                    except BlockingIOError:
+                        break
+                    except OSError:
+                        break
+                    else:
+                        if not item:
+                            break
+                        out.append(item)
+            except Exception:
+                pass
+            return out
+
+        # 4) Raw socket fallback
+        s = getattr(srv, "socket", None)
+        if s is not None:
+            import socket
+            try:
+                s.setblocking(False)
+                while True:
+                    try:
+                        data, addr = s.recvfrom(65536)
+                    except BlockingIOError:
+                        break
+                    except OSError:
+                        break
+                    else:
+                        out.append((data, addr))
+            except Exception:
+                pass
+
+        return out
 
     def _handle_master_stop_via_udp(self, address):
         """Handle UDP 'stop' command - master stop all cameras."""
@@ -413,132 +461,185 @@ class NeuCamsWindow(QMainWindow):
     # widgets.py
 
     def _udp_apply_run_and_unlock(self, run_spec: str, address=None):
-        """Apply run name from UDP exactly like the GUI 'Set' button, then unlock Record."""
+        # Normalize input like: strip quotes/spaces
         run_spec = str(run_spec).strip().strip('"').strip("'")
 
-        # show in the UI text box (so the user sees it too)
+        # 1) Reflect in the text box (so the Set button lights up, etc.)
         try:
             self.run_name_edit.setText(run_spec)
         except Exception:
             pass
 
-        # Call the same handler the Set button uses (validates + applies to cameras)
+        # 2) Apply per-camera save folders (respects base data dir + per-camera subdir)
         try:
-            self._on_set_run_name()
+            self._on_set_run_name()   # your existing validator/applier; also enables Record UI
         except Exception as e:
             display(f"[UDP] _on_set_run_name() failed: {e}", level="error")
-            # still try to continue so we can show diagnostics
-            # (you can 'return' here if you prefer to be strict)
 
-        # Make sure the Record checkbox(es) get enabled like the GUI would
+        # 3) Arm Record so a later Master Start will actually write files (but do not start now)
         try:
             self._update_record_controls_enabled()
+            for w in getattr(self, "cam_widgets", []):
+                cb = getattr(w, "record_checkBox", None)
+                if cb is not None and cb.isEnabled() and not cb.isChecked():
+                    cb.setChecked(True)
         except Exception:
             pass
 
-        # ---- DIAGNOSTICS: show base folder, run_spec, and each camera's final folder ----
+        # 4) Log where each camera will save
         try:
-            base = getattr(self.preferences, "recorder_params", {}).get("data_folder", "")
+            base = self._get_data_folder() or ""
         except Exception:
             base = ""
-        # Collect what each camera will actually use
-        per_cam = []
         for w in getattr(self, "cam_widgets", []):
             ch = getattr(w, "cam_handler", None)
-            descr = ""
-            if ch and hasattr(ch, "cam_dict"):
-                descr = ch.cam_dict.get("description", "")
-            final_folder = None
-
-            # If your handler exposes a current folder string/array, use it:
+            descr = ch.cam_dict.get("description", "") if ch and hasattr(ch, "cam_dict") else ""
+            dest = None
             if ch and hasattr(ch, "get_current_save_folder"):
                 try:
-                    final_folder = ch.get_current_save_folder()
+                    dest = ch.get_current_save_folder()
                 except Exception:
-                    final_folder = None
-
-            # Fallback: expected path based on your app’s convention
-            if not final_folder:
-                if base and descr and run_spec:
-                    final_folder = os.path.normpath(os.path.join(base, descr, run_spec))
-                else:
-                    final_folder = "<unknown>"
-
-            per_cam.append((descr or "<cam>", final_folder))
+                    pass
+            if not dest:
+                from os.path import join, normpath
+                dest = normpath(join(base, descr, run_spec)) if (base and descr and run_spec) else "<unknown>"
+            display(f"[UDP]   {descr or '<cam>'}: {dest}", level="info")
 
         display(f"[UDP] Applied run name: {run_spec!r} (base={base!r})", level="info")
-        for descr, folder in per_cam:
-            display(f"[UDP]   {descr}: {folder}", level="info")
 
-        # Optional ACK
+        # 5) ACK to sender
         try:
             if address and getattr(self, "server", None):
                 self.server.send("ok=setrun", address)
         except Exception:
             pass
 
+
     def _process_server_messages(self):
-        srv = getattr(self, 'server', None)
-        if not srv:
-            return
-        ret, msg, address = srv.receive()
-        if not ret:
+        msgs = self._recv_udp_burst()  # [(text, addr), ...]
+        if not msgs:
             return
 
-        raw = (msg or "").strip()
-        if not raw:
-            return
+        import re
 
-        # already working:
-        if raw.lower() == "start":
-            self._handle_master_start_via_udp(address); return
-        if raw.lower() == "stop":
-            self._handle_master_stop_via_udp(address); return
+        for text, addr in msgs:
+            # Normalize text
+            if not isinstance(text, str):
+                try:
+                    text = text.decode("utf-8", "ignore")
+                except Exception:
+                    text = str(text)
+            raw = text.strip()
+            low = raw.lower()
 
-        # Treat these as RUN NAME (session/run), not absolute folder:
-        if raw.upper().startswith("SET_PATH "):
-            run_spec = raw[9:].strip()
-            self._udp_apply_run_and_unlock(run_spec, address)
-            return
+            # 1) START / STOP — delegate to the Master button
+            if low in {"start", "go", "run", "master_start"}:
+                self._log(f"UDP master start command received {addr}")
+                try:
+                    # Let the button toggle call _master_toggled()
+                    if hasattr(self, "actionMasterStartStop"):
+                        if not self._all_cameras_running():
+                            self.actionMasterStartStop.setChecked(True)
+                    # small ACK
+                    if getattr(self, "server", None):
+                        try:
+                            self.server.send("ok=start", addr)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                continue
 
-        if raw.lower().startswith(("name=", "setrun=", "folder=")):
-            _, run_spec = raw.split("=", 1)
-            run_spec = run_spec.strip()
-            self._udp_apply_run_and_unlock(run_spec, address)
-            return
+            if low in {"stop", "halt", "master_stop"}:
+                self._log(f"UDP master stop command received {addr}")
+                try:
+                    if hasattr(self, "actionMasterStartStop"):
+                        if not self._all_cameras_stopped():
+                            self.actionMasterStartStop.setChecked(False)
+                    if getattr(self, "server", None):
+                        try:
+                            self.server.send("ok=stop", addr)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                continue
 
-        # Optional: status probe
-        if raw.lower() in ("status?", "whoami?"):
-            try:
-                base = getattr(self.preferences, "recorder_params", {}).get("data_folder", "")
-            except Exception:
-                base = ""
-            rn = ""
-            try:
-                rn = self.run_name_edit.text().strip()
-            except Exception:
-                pass
-            # quick record-enabled check
-            rec_enabled = False
-            for attr in ("record_checkbox", "recordCheckBox", "cb_record"):
-                cb = getattr(self, attr, None)
-                if cb is not None:
+            # 2) RUN / NAME / SAVE PATH
+            # Accept many forms, e.g.:
+            #   folder=251001_EU010__no_cam_MG
+            #   RUN_NAME: 251001_EU010__no_cam_MG/run01_something
+            #   save_path=...
+            #   or a plain path-like string with slashes
+            run_name = None
+
+            # key=value or key: value
+            for key in ("folder", "setrun", "run", "name", "set_name", "save_path", "savepath", "path", "run_name"):
+                # key = value
+                m = re.search(rf"\b{key}\b\s*=\s*(.+)$", raw, flags=re.IGNORECASE)
+                if m:
+                    run_name = m.group(1).strip()
+                    break
+                # key: value
+                m = re.search(rf"\b{key}\b\s*:\s*(.+)$", raw, flags=re.IGNORECASE)
+                if m:
+                    run_name = m.group(1).strip()
+                    break
+
+            # fallback: plain path-like string containing a slash or backslash
+            if run_name is None and re.search(r"[\\/]", raw) and len(raw) > 3:
+                run_name = raw
+
+            if run_name:
+                # Normalize separators and drop quotes
+                run_name = run_name.strip().strip('"\'')
+
+                # Apply to all cameras (update writer folders and GUI labels)
+                try:
+                    self._apply_run_name_to_cameras(run_name)
+                except Exception:
+                    # fallback: older method for a single textbox path, if present
                     try:
-                        rec_enabled = bool(cb.isEnabled())
-                        break
+                        self._set_save_path(run_name)
                     except Exception:
                         pass
-            msg_out = f"base={base}; run={rn}; record_enabled={rec_enabled}"
-            self.server.send(msg_out, address)
-            return
 
-        # Unknown
-        try:
-            self.server.send("err=unknown_cmd", address)
-        except Exception:
-            pass
+                # Enable the record checkboxes so Master Start can record if user wants
+                for w in self.cam_widgets:
+                    if hasattr(w, "record_checkBox"):
+                        try:
+                            w.record_checkBox.setEnabled(True)
+                            # If you want auto-armed recording, uncomment:
+                            # w.record_checkBox.setChecked(True)
+                        except Exception:
+                            pass
 
-        
+                # Nice log + ACK
+                try:
+                    base = getattr(self, "base_dir", "") or ""
+                    self._log(f"[UDP] Applied run name: '{run_name}' (base='{base}')")
+                    for w in self.cam_widgets:
+                        ch = getattr(w, "cam_handler", None)
+                        if not ch:
+                            continue
+                        folder = getattr(ch, "save_folder", None)
+                        if folder:
+                            # Force forward slashes for readability
+                            disp = folder.replace("\\", "/")
+                            self._log(f"[UDP]   {ch.name}: {disp}")
+                    if getattr(self, "server", None):
+                        try:
+                            self.server.send("ok=setrun", addr)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                continue
+
+            # 3) Unknown message — log it so we can learn its format
+            self._log(f"[UDP] Unhandled message from {addr}: {raw!r}")
+  
     # ------------------------------------------------------------------
     # Utility helpers (unchanged)
     # ------------------------------------------------------------------
@@ -648,85 +749,82 @@ class NeuCamsWindow(QMainWindow):
             self.actionMasterStartStop.setText("Master (mixed)")
 
     def _master_toggled(self, checked: bool):
-        # Safety: if mixed, bail (should already be disabled)
+        # Safety: if mixed, bail (should already be disabled by caller)
         if not (self._all_cameras_running() or self._all_cameras_stopped()):
             return
 
+        from PyQt5.QtCore import QTimer
+
         if checked:
-            # Broadcast trigger setting first, then start after a short delay
+            # Apply trigger settings before we actually start
             try:
                 self._broadcast_trigger_setting()
             except Exception:
                 pass
-            from PyQt5.QtCore import QTimer
+
             def _do_start_all():
                 for w in self.cam_widgets:
                     ch = w.cam_handler
                     if ch.camera_ready.is_set():
                         started = ch.start_acquisition()
-                        if started:
+                        if started and hasattr(w, "_set_stop_text"):
                             w._set_stop_text()
                 self._update_master_action_enabled()
-            QTimer.singleShot(60, _do_start_all)
+
+            # Use the constant so it’s easy to tune
+            QTimer.singleShot(ARM_DELAY_MS, _do_start_all)
+
         else:
-            # Stop all
+            # Stop all cameras
             for w in self.cam_widgets:
                 ch = w.cam_handler
                 is_running = ch.start_trigger.is_set() and not ch.stop_trigger.is_set()
                 if is_running:
                     ch.stop_acquisition()
-                    w._set_start_text()
+                    if hasattr(w, "_set_start_text"):
+                        w._set_start_text()
 
-        self._update_master_action_enabled()
+            self._update_master_action_enabled()
+    
 
+    # widgets.py
     def _broadcast_trigger_setting(self):
-        """Send the universal trigger mode to all cameras that can accept it.
-        Cameras that do not recognize it will safely ignore it in apply_params()."""
         want_on = self.trigger_master_check.isChecked()
         val = 'On' if want_on else 'Off'
-        
-        # Collect cameras that can't be triggered for popup warning
-        unsupported_cameras = []
-        
+        unsupported = []
+
         for w in self.cam_widgets:
             ch = w.cam_handler
-            try:
-                # Skip Dalsa/GenICam cameras entirely from global trigger control
-                driver = ch.cam_dict.get('driver', '').lower()
-                cam_description = ch.cam_dict.get('description', 'unknown')
-                
-                if driver == 'genicam':
-                    display(f"Skipping trigger setting for Dalsa camera '{cam_description}' - not supported")
-                    unsupported_cameras.append(f"{cam_description} (Dalsa/GenICam)")
-                    continue
-                
-                # Optional guard using capability flag when available
-                supported = True
-                try:
-                    supported = bool(getattr(ch, 'trigger_supported', None).value)
-                except Exception:
-                    supported = True  # best-effort
-                    
-                if not supported:
-                    unsupported_cameras.append(f"{cam_description} ({driver})")
-                    continue
-                    
-                if supported:
-                    ch.set_cam_param('trigger_mode', val)
-            except Exception:
-                pass
-            # reflect on per-camera checkbox if present
+            driver = ch.cam_dict.get('driver', '').lower()
+            cam_description = ch.cam_dict.get('description', 'unknown')
+
+            if driver in ('genicam', 'hamamatsu'):
+                what = 'Dalsa/GenICam' if driver == 'genicam' else 'Hamamatsu'
+                display(f"Skipping trigger setting for camera '{cam_description}' - not supported ({what})")
+                unsupported.append(f"{cam_description} ({what})")
+                continue
+
+            # otherwise:
+            ch.set_cam_param('trigger_mode', val)
+
+            # reflect per-camera checkbox if present
             try:
                 if hasattr(w, 'trigger_checkBox'):
+                    w.trigger_checkBox.blockSignals(True)
                     w.trigger_checkBox.setChecked(want_on)
+                    w.trigger_checkBox.blockSignals(False)
             except Exception:
                 pass
-        
-        if unsupported_cameras and want_on:
-            camera_list = ', '.join(unsupported_cameras)
-            display(f"Trigger not supported for: {camera_list}. They remain in free-run mode.")
-        elif unsupported_cameras and not want_on:
-            display(f"Trigger disabled. Note: {len(unsupported_cameras)} camera(s) don't support triggering anyway.")
+
+        if unsupported and want_on:
+            msg = f"Trigger not supported for: {', '.join(unsupported)}. They remain in free-run mode."
+            from neucams.utils import display
+            display(msg)
+        elif unsupported and not want_on:
+            from neucams.utils import display
+            display(f"Trigger disabled. Note: {len(unsupported)} camera(s) don't support triggering anyway.")
+
+
 
         # 1) after _set_save_path(save_path) succeeds, emulate pressing Set:
     def _confirm_folder_set(self):
@@ -798,33 +896,37 @@ class NeuCamsWindow(QMainWindow):
         self.trigger_master_check.setEnabled(enabled)
     
     def _update_record_controls_enabled(self):
-        # Disable record checkboxes when no save path is set
-        # Check if any camera actually has a folder path set (meaning "Set" was clicked)
-        has_valid_path = False
-        if self.cam_widgets:
-            # Check if at least one camera has a folder path set
-            for w in self.cam_widgets:
-                ch = w.cam_handler
-                if ch.get_folder_path().strip():
-                    has_valid_path = True
-                    break
-        
+        """
+        Enable/disable the per-camera Record checkbox depending on whether a valid
+        save folder is already set. Robust across handler API differences.
+        """
         for w in self.cam_widgets:
-            if hasattr(w, 'record_checkBox'):
-                # Only enable if path is set AND camera is not currently running
-                ch = w.cam_handler
-                is_running = ch.start_trigger.is_set() and not ch.stop_trigger.is_set()
-                enabled = has_valid_path and not is_running
-                w.record_checkBox.setEnabled(enabled)
-                
-                # Set helpful tooltip based on why it's disabled
-                if not enabled:
-                    if not has_valid_path:
-                        w.record_checkBox.setToolTip("Set a save path first using the 'Set' button above")
-                    elif is_running:
-                        w.record_checkBox.setToolTip("Stop camera to change recording state")
-                else:
-                    w.record_checkBox.setToolTip("Enable/disable recording for this camera")
+            ch = getattr(w, "cam_handler", None)
+            if not ch or not hasattr(w, "record_checkBox"):
+                continue
+
+            # Try a few ways to get the path
+            p = ""
+            try:
+                if hasattr(ch, "get_folder_path"):
+                    p = ch.get_folder_path() or ""
+            except Exception:
+                p = ""
+            if not p:
+                try:
+                    if hasattr(ch, "get_current_save_folder"):
+                        p = ch.get_current_save_folder() or ""
+                except Exception:
+                    p = ""
+            if not p and hasattr(ch, "save_folder"):
+                p = ch.save_folder or ""
+
+            has_valid_path = bool((p or "").strip())
+            try:
+                w.record_checkBox.setEnabled(has_valid_path)
+            except Exception:
+                pass
+
 
     def _update_global_path_label(self):
         data_folder = self._get_data_folder()
@@ -896,37 +998,46 @@ class NeuCamsWindow(QMainWindow):
 
 
     def _apply_run_name_to_cameras(self, name: str):
+        from os.path import join
+
         data_folder = self._get_data_folder()
         if not data_folder:
             return  # silent in UDP path
 
-        # Expected format: session_name/run_name or session_name\run_name
-        # Convert backslashes to forward slashes for consistency
-        normalized_name = name.replace('\\', '/')
-        
+        # Accept "session/run" or just "session"
+        normalized_name = (name or "").replace("\\", "/").strip("/")
+
         for w in self.cam_widgets:
             ch = w.cam_handler
             cam_desc = ch.cam_dict.get('description', 'camera')
-            # Structure: data_folder/camera_description/session_name/run_name
+            # Structure: <data_folder>/<camera>/<normalized_name>
             new_folder = join(data_folder, cam_desc, normalized_name)
-            # Ask handler to apply folder immediately (writer aware)
+
+            # Ask handler to apply folder immediately (writer-aware)
             try:
                 ch.cam_param_InQ.put(('set_folder', new_folder))
             except Exception:
                 # Fallback to shared-array update
-                ch.set_folder_path(new_folder)
-            # Refresh the filepath preview used by UI labels immediately
-            new_fp = ch.get_new_filepath()
+                try:
+                    ch.set_folder_path(new_folder)
+                except Exception:
+                    pass
+
+            # Refresh the filepath preview used by UI labels
+            try:
+                new_fp = ch.get_new_filepath()
+            except Exception:
+                new_fp = new_folder
             if hasattr(w, "save_location_label"):
-                # Convert backslashes to forward slashes for consistent display
-                display_filepath = new_fp.replace('\\', '/')
-                w.save_location_label.setText('Filepath: ' + display_filepath)
-            
-            # Reset frame counter display for clarity
-            ch.total_frames.value = 0
+                w.save_location_label.setText('Filepath: ' + (new_fp or "").replace("\\", "/"))
+
+            # Reset the frame counter label for clarity
+            try:
+                ch.total_frames.value = 0
+            except Exception:
+                pass
             if hasattr(w, "frame_nr_label"):
                 w.frame_nr_label.setText("frame: 0")
-
 
 
     # ------------------------------------------------------------------

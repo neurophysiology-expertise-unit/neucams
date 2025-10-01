@@ -73,6 +73,7 @@ class CameraHandler(Process):
         self.folder_path_array = Array('u',' ' * 1024) #can set folder
         self.filepath_array = Array('u',' ' * 1024) #filepath is readonly
         
+        self._master_t0_ns = None
         self.run_nr = 0
         self.frame_nr = 0
         
@@ -98,6 +99,15 @@ class CameraHandler(Process):
         # tell the driver we're only peeking for format (no stream, no full apply)
         setattr(cam, "_open_for_format", True)
         return cam
+    
+    def set_master_t0_ns(self, t0_ns: int):
+        self._master_t0_ns = int(t0_ns)
+        try:
+            if getattr(self, "writer", None) is not None and hasattr(self.writer, "set_master_t0_ns"):
+                self.writer.set_master_t0_ns(self._master_t0_ns)
+        except Exception:
+            pass
+
 
     def _init_framebuffer(self):
         with self._open_cam_for_format() as cam:
@@ -349,17 +359,23 @@ class CameraHandler(Process):
         self.frame_nr = 0
         self.lastframeid = -1
         # Only set filepath if writer exists (will be set when recording starts)
+        if self._master_t0_ns is not None:
+            self.writer.set_master_t0_ns(self._master_t0_ns)
+
         if self.writer is not None:
             self.writer.set_filepath(self.get_new_filepath())
         self.camera_ready.set()
     
     def close_run(self):
-        # Ensure device acquisition really stops between runs
+
         try:
-            if hasattr(self, "cam") and self.cam:
-                self.cam.stop()
+            drv = str(getattr(self.cam, "driver", self.cam_dict.get("driver",""))).lower()
+            if drv not in ("hamamatsu",):
+                if hasattr(self.cam, "stop"):
+                    self.cam.stop()
         except Exception:
             pass
+
 
         # Close writer if it was created
         if hasattr(self, 'writer') and self.writer is not None:
@@ -403,13 +419,21 @@ class CameraHandler(Process):
             display(f"Failed to apply camera params before start: {e}", level='error')
 
         # --- make sure we're disarmed before arming again ---
+        # camera_handler.py (inside wait_for_trigger)
         try:
-            if hasattr(self.cam, "stop") and callable(self.cam.stop):
-                self.cam.stop()
+            drv = str(getattr(self.cam, "driver", self.cam_dict.get("driver",""))).lower()
+            if drv not in ("hamamatsu",):
+                if hasattr(self.cam, "stop") and callable(self.cam.stop):
+                    self.cam.stop()
         except Exception:
             pass
-        # -----------------------------------------------------
 
+        # NEW: Hamamatsu needs its stream armed before starting a run
+        try:
+            if drv == "hamamatsu" and hasattr(self.cam, "start_streaming"):
+                self.cam.start_streaming()
+        except Exception:
+            pass
             
         # Ensure writer is ready BEFORE starting the camera if recording is requested
         try:
@@ -511,14 +535,19 @@ class CameraHandler(Process):
             pass
             # self.cam.apply_params() #-- DEFERRED until acquisition start
 
-    def set_cam_param(self, param : str, val):
-        """Puts a ('set', param, value) command on the input queue."""
+    # camera_handler.py -> in set_cam_param()
+    def set_cam_param(self, param: str, val):
+        drv = str(self.cam_dict.get('driver', '')).lower()
+        if param.lower() in ('trigger_mode', 'trigger') and drv == 'hamamatsu':
+            from neucams.utils import display
+            display("Hamamatsu is free-run; ignoring trigger_mode change.")
+            return True
+        # normal path:
         try:
-            # Use a tuple to be consistent with the 'get' command
             self.cam_param_InQ.put(('set', param, val))
         except queue.Full:
-            display(f"Warning: could not set cam param {param}, queue is full",
-                    level='warning')
+            display(f"Warning: could not set cam param {param}, queue is full", level='warning')
+
 
     def query_cam_params(self):
         # self.cam_param_OutQ.put(None) # Not needed with clear_queue

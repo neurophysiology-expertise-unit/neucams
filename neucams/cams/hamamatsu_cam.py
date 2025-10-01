@@ -10,6 +10,37 @@ from pyDCAM.dcamapi_enum import DCAM_IDSTR
 
 from .generic_cam import GenericCam
 
+import sys
+
+def _normalize_trigger_source(val) -> str:
+    """
+    Map user/config values to INTERNAL / EXTERNAL / SOFTWARE.
+    Accepts: 'internal', 'external', 'software', True/False, 'on'/'off', 0/1.
+    'off' -> INTERNAL (free-run), 'on' -> EXTERNAL.
+    """
+    if val is None:
+        return "INTERNAL"
+    s = str(val).strip().lower()
+    if s in ("internal", "int", "free", "free-run", "freerun", "off", "false", "0"):
+        return "INTERNAL"
+    if s in ("external", "ext", "on", "true", "1", "hw", "hardware"):
+        return "EXTERNAL"
+    if s in ("software", "soft", "sw"):
+        return "SOFTWARE"
+    return "INTERNAL"  # safe default
+
+# robust verbose print (no Unicode crash)
+def _print_safe(prefix, msg):
+    line = f"{prefix}{msg}"
+    try:
+        sys.stdout.write(line + "\n"); sys.stdout.flush()
+    except Exception:
+        try:
+            enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+            sys.stdout.buffer.write((line + "\n").encode(enc, errors="replace"))
+            sys.stdout.flush()
+        except Exception:
+            pass
 
 # ----------------- Runtime wrapper -----------------
 class _DCAMRuntime:
@@ -54,6 +85,8 @@ class HamamatsuCam(GenericCam):
     Minimal, opinionated pyDCAM driver with AVT-like params and loud before→after prints.
     Uses the Python API names only (dcamprop_getvalue, dcamprop_setgetvalue, etc.).
     """
+    driver = "hamamatsu"
+    supports_trigger = "False"
 
     def __init__(
         self,
@@ -96,6 +129,7 @@ class HamamatsuCam(GenericCam):
             elif tm in ("off", "false", "0"):
                 merged_params["trigger_source"] = "INTERNAL"
 
+        self._streaming = False
         self.serial_number = serial_number
         self._rt = _DCAMRuntime()
         self._cam: Optional[HDCAM] = None
@@ -116,10 +150,44 @@ class HamamatsuCam(GenericCam):
             "verbose",
         ]
 
-    # ----- tiny print helper -----
-    def _v(self, msg: str):
-        if self.params.get("verbose", True):
-            print(f"[Hamamatsu] {msg}")
+
+    def _v(self, msg):
+        _print_safe("[Hamamatsu] ", msg)
+        s = f"[Hamamatsu] {msg}"
+        try:
+            sys.stdout.write(s + "\n"); sys.stdout.flush()
+        except Exception:
+            try:
+                enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+                sys.stdout.buffer.write((s + "\n").encode(enc, errors="replace"))
+                sys.stdout.flush()
+            except Exception:
+                pass
+
+
+    def set_trigger(self, enabled: bool, source=None, mode=None):
+        # No-op; prevents any external caller from stopping stream
+        try:
+            self._v(f"Trigger not supported; ignoring set_trigger(enabled={enabled})")
+        except Exception:
+            pass
+        return False
+
+    def _normalize_trigger_source(val) -> str:
+        """
+        Map various user inputs to INTERNAL / EXTERNAL / SOFTWARE.
+        Accepts: 'internal', 'external', 'software', True/False, 'on'/'off'.
+        """
+        if val is None:
+            return "INTERNAL"
+        s = str(val).strip().lower()
+        if s in ("internal", "int", "free", " freerun", "free-run", "off", "false", "0"):
+            return "INTERNAL"
+        if s in ("external", "ext", "on", "true", "1", "hw", "hardware"):
+            return "EXTERNAL"
+        if s in ("software", "soft", "sw"):
+            return "SOFTWARE"
+        return "INTERNAL"
 
     # ----- helper: safe property write with NOTWRITABLE guard -----
     def _try_set_prop(self, prop, value, label: str):
@@ -212,6 +280,61 @@ class HamamatsuCam(GenericCam):
             self._wait = None
         self._v("Streaming stopped")
 
+        # ------------------------------------------------------------
+    # Fast re-arm between runs (used by CameraHandler)
+    # ------------------------------------------------------------
+    def start(self):
+        """
+        Re-arm streaming without reopening the camera.
+        Safe to call repeatedly; no-op if already streaming.
+        """
+        try:
+            if self._cam is None:
+                # Device is not open; this driver is used as a context manager.
+                # Only re-arm when we're already inside `with HamamatsuCam(...) as cam:`.
+                return
+            if getattr(self, "is_recording", False):
+                return  # already streaming
+
+            # (Re)allocate buffers if needed
+            try:
+                nbuf = int(getattr(self, "nbuf", 8))
+            except Exception:
+                nbuf = 8
+            try:
+                # If buffers are already attached, this may raise; that's OK.
+                self._cam.dcambuf_alloc(DCAMBUF_ATTACHKIND.DCAMBUF_ATTACHKIND_FRAME, nbuf)
+            except Exception:
+                pass  # assume buffers are fine
+
+            # (Re)open wait handle if needed
+            if getattr(self, "_wait", None) is None:
+                try:
+                    self._wait = self._cam.dcamwait_open()
+                except Exception:
+                    self._wait = None  # continue anyway
+
+            # Start acquisition
+            self._cam.dcamcap_start(DCAMCAP_START.DCAMCAP_START_SEQUENCE)
+            self.is_recording = True
+            self._v("Streaming started")
+            self._log_effective_fps()
+        except Exception:
+            # be robust in GUI context
+            self.is_recording = False
+            self._v("Streaming start failed")
+
+    # Optional convenience aliases
+    def start_streaming(self):
+        self.start()
+
+    def stop_streaming(self):
+        # Delegate to the existing stop() which already stops and releases
+        try:
+            self.stop()
+        except Exception:
+            pass
+
     # ----- acquisition -----
     def image(self) -> Tuple[Optional[np.ndarray], str | Tuple[int, float]]:
         if not (self.is_recording and self._cam and self._wait):
@@ -226,33 +349,31 @@ class HamamatsuCam(GenericCam):
 
     # ----- params & format -----
     def _apply_params_minimal(self):
-        p = self.params
-
-        # Trigger source (set early; affects what is writable)
-        ts = str(p.get("trigger_source", "INTERNAL")).strip().upper()
-        ts_map: Dict[str, Any] = {
-            "SOFTWARE": DCAMPROPMODEVALUE.DCAMPROP_TRIGGERSOURCE__SOFTWARE,
-            "EXTERNAL": DCAMPROPMODEVALUE.DCAMPROP_TRIGGERSOURCE__EXTERNAL,
+        p = self.params or {}
+        # --- Trigger source (set early; affects what is writable) ---
+        ts = _normalize_trigger_source(p.get("trigger_source", "INTERNAL"))
+        ts_map = {
             "INTERNAL": DCAMPROPMODEVALUE.DCAMPROP_TRIGGERSOURCE__INTERNAL,
+            "EXTERNAL": DCAMPROPMODEVALUE.DCAMPROP_TRIGGERSOURCE__EXTERNAL,
+            "SOFTWARE": DCAMPROPMODEVALUE.DCAMPROP_TRIGGERSOURCE__SOFTWARE,
         }
-        if ts in ts_map:
+        try:
             self._try_set_prop(DCAMIDPROP.DCAM_IDPROP_TRIGGERSOURCE, ts_map[ts], f"TriggerSource={ts}")
-        else:
-            self._v(f"TriggerSource ignored (unknown): {ts}")
-
-        # Exposure (us -> s). If there is an exposure control and it's AUTO, don't fight it.
-        if p.get("exposure") is not None:
-            # Try to put exposure control into MANUAL if possible (best-effort, no crash)
+        except Exception as e:
+            self._v(f"TriggerSource={ts} not writable; falling back to INTERNAL. Reason: {getattr(e,'args',e)}")
             try:
-                if self._control_is_auto(DCAMIDPROP.DCAM_IDPROP_EXPOSURETIME_CONTROL):
-                    self._v("ExposureTimeControl is AUTO → not forcing manual; skipping explicit ExposureTime set.")
-                else:
-                    secs = float(p["exposure"]) / 1e6
-                    self._try_set_prop(DCAMIDPROP.DCAM_IDPROP_EXPOSURETIME, secs, "ExposureTime [s]")
-            except Exception:
-                # If control prop not present, just try to set exposure
-                secs = float(p["exposure"]) / 1e6
-                self._try_set_prop(DCAMIDPROP.DCAM_IDPROP_EXPOSURETIME, secs, "ExposureTime [s]")
+                self._try_set_prop(DCAMIDPROP.DCAM_IDPROP_TRIGGERSOURCE, ts_map["INTERNAL"], "TriggerSource=INTERNAL")
+            except Exception as e2:
+                self._v(f"Failed to set TriggerSource=INTERNAL as fallback: {getattr(e2,'args',e2)}")
+
+       # --- Exposure ---
+        exp_req = p.get("exposure")
+        if exp_req is not None:
+            # Your JSON might be in microseconds; normalize to seconds if needed.
+            exp_s = float(exp_req)
+            if exp_s > 1000:  # heuristic: treat as microseconds if very large
+                exp_s = exp_s / 1e6
+            self._try_set_prop(DCAMIDPROP.DCAM_IDPROP_EXPOSURETIME, exp_s, f"ExposureTime [s]={exp_s}")
 
         # Binning
         if p.get("binning") is not None:
@@ -275,7 +396,7 @@ class HamamatsuCam(GenericCam):
             fps = float(p["frame_rate"])
             ok = self._try_set_prop(DCAMIDPROP.DCAM_IDPROP_INTERNALFRAMERATE, fps, "InternalFrameRate [Hz]")
             if not ok:
-                self._v("InternalFrameRate is read-only here → using Exposure/ROI to drive effective FPS.")
+                self._v("InternalFrameRate is read-only here -> using Exposure/ROI to drive effective FPS.")
 
     def is_triggered(self) -> bool:
         return str(self.params.get("trigger_source", "INTERNAL")).upper() != "INTERNAL"
