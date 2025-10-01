@@ -67,7 +67,7 @@ if (-not $haveNeuEnv) {
 }
 
 # Ensure PyInstaller via pip (avoid conda solver)
-conda run -n $PYINSTALLER_ENV python -m pip install --upgrade "pyinstaller==6.15.0" | Out-Host
+conda run -n $PYINSTALLER_ENV python -m pip install --upgrade "pyinstaller==6.15.0" pyDCAM | Out-Host
 
 # ---- Enhanced Cleaning ----
 function Clean-BuildArtifacts {
