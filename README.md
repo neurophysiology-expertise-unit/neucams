@@ -1,14 +1,24 @@
 
-# This repository is a version of Joao Couto's labcams repository (available at https://bitbucket.org/jpcouto/labcams). 
-The name has changed to neucams, the intent is similar, but there are significant changes and a more compatible structure.
+# neucams
 
-It's currently under work.
+A multi-camera acquisition and experiment-automation tool. neucams is the
+successor to Joao Couto's *labcams* (https://bitbucket.org/jpcouto/labcams).
+Its lineage:
 
-Changes include:
+* **Joao Couto** wrote the original *labcams*.
+* **Adrien Philippon** ported it to Python 3.
+* That version could no longer keep up with newer cameras and libraries, so
+  **Ahmet Cemal Öztürk** rewrote it against current libraries and added support
+  for more cameras — under **Cagatay**'s supervision — and renamed it from
+  *labcams* to **neucams**.
 
-* different repository structure
-* switch to Python 3
-* extensive rewrite
+Still under active development.
+
+Compared with labcams, neucams brings:
+
+* a different repository structure
+* modern Python 3
+* an extensive rewrite
 * improved modularity and reliability
 * multi‑camera acquisition with per‑camera settings; synchronized start/stop where supported
 
@@ -177,9 +187,11 @@ Notes:
 
 ### Credits and License
 
-Joao Couto - jpcouto@gmail.com
-See `LICENSE.txt` for licensing.
+Lineage: **Joao Couto** wrote the original *labcams* (jpcouto@gmail.com —
+https://bitbucket.org/jpcouto/labcams); **Adrien Philippon**
+(adrien.philippon@nerf.be) ported it to Python 3; **Ahmet Cemal Öztürk**
+(ozturk.ace@gmail.com) then rewrote it against current libraries, added support
+for more cameras, and renamed it to neucams — under **Cagatay**'s supervision.
 
-This project has been substantially rewritten and is maintained here.
-Ahmet Cemal Öztürk - ozturk.ace@gmail.com
+See `LICENSE.txt` for licensing.
 
