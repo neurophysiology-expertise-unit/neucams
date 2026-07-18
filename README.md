@@ -42,7 +42,7 @@ and git.
 
 ```powershell
 # 1. Clone (default branch is 'main' -- the working one)
-git clone https://github.com/neurophsiology-expertise-unit/neucams.git
+git clone https://github.com/neurophysiology-expertise-unit/neucams.git
 cd neucams
 
 # 2. Create the conda environment (Python 3.9, PyQt5, OpenCV, ffmpeg, zeromq,

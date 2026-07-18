@@ -27,7 +27,7 @@ This guide describes two ways to get **NeuCams** up and running:
 
 ```powershell
 # clone once
-git clone https://github.com/neurophsiology-expertise-unit/neucams.git
+git clone https://github.com/neurophysiology-expertise-unit/neucams.git
 cd neucams
 
 # create / activate env, the name is arbitrary.
