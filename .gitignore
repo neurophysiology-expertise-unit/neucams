@@ -75,3 +75,7 @@ __pycache__/
 # Jupyter notebook checkpoints
 .ipynb_checkpoints/
 
+
+# generated per-build (machine path + timestamp) -- not source
+build_neucams/build_info.txt
+neucams.zip

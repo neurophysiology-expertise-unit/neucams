@@ -1,205 +1,129 @@
-# build_neucams\build_installer.ps1
+<# ============================================================================
+ build_installer.ps1 — drop-in
+ - Uses conda env `neucams_env` by default
+ - Upgrades pip/setuptools/wheel/packaging (fixes pyzmq metadata warning)
+ - Installs PyInstaller + pyDCAM in the build env
+ - Writes a build stamp for verification (read by NeuCams.spec)
+ - Runs PyInstaller on NeuCams.spec
+ - Rebuilds payload.zip from dist/NeuCams/*
+ - If construct.yaml exists, runs `constructor` to make the installer
+============================================================================ #>
+
+[CmdletBinding()]
 param(
-    [switch]$Clean = $false,
-    [switch]$Help = $false
+  [string]$PyInstallerEnv = "neucams_env",
+  [switch]$OneFile,
+  [switch]$DebugPyInstaller
 )
 
-$ErrorActionPreference = 'Stop'
-Set-Location -LiteralPath $PSScriptRoot
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 
-# Show help if requested
-if ($Help) {
-    Write-Host @"
-NeuCams Build Script
-
-Usage:
-  .\build_installer.ps1              # Normal build (cleans some artifacts)
-  .\build_installer.ps1 -Clean       # Full clean build (removes all artifacts)
-  .\build_installer.ps1 -Help        # Show this help
-
-Options:
-  -Clean    Perform a complete clean build, removing all build artifacts,
-            dist folders, cache files, and previous installers
-  -Help     Show this help message
-
-"@
-    exit 0
+# --- Resolve paths
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot  = Resolve-Path (Join-Path $ScriptDir ".")
+$SpecCandidates = @(
+  (Join-Path $RepoRoot "build_neucams\NeuCams.spec"),
+  (Join-Path $RepoRoot "NeuCams.spec")
+)
+$SpecPath = $SpecCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $SpecPath) {
+  throw "NeuCams.spec not found. Looked in: $($SpecCandidates -join ', ')"
 }
+$SpecDir     = Split-Path -Parent $SpecPath
+$DistDir     = Join-Path $RepoRoot "dist\NeuCams"
+$BuildDir    = Join-Path $RepoRoot "build"
+$PayloadZip  = Join-Path $RepoRoot "payload.zip"
+$ConstructYml= Join-Path $RepoRoot "construct.yaml"
 
-# keep PyInstaller outputs under build_neucams
-$Dist  = Join-Path $PSScriptRoot 'dist'
-$Build = Join-Path $PSScriptRoot 'build'
-$Spec  = Join-Path $PSScriptRoot 'NeuCams.spec'
+New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 
-# ---- Config ----
-$PYINSTALLER_ENV = 'neucams_env'   # your app env (py39)
-$CONSTRUCTOR_ENV = 'ctorenv'       # tool env for constructor
+Write-Host "RepoRoot:         $RepoRoot"
+Write-Host "SpecPath:         $SpecPath"
+Write-Host "PyInstaller Env:  $PyInstallerEnv"
 
-# ---- Paths ----
-$ScriptDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot     = Split-Path -Parent $ScriptDir
-$BuildDir     = Join-Path $RepoRoot 'build_neucams'
-$SpecPath     = Join-Path $BuildDir 'NeuCams.spec'
-$ConstructYml = Join-Path $BuildDir 'construct.yaml'
+# --- Find conda
+$conda = $Env:CONDA_EXE
+if (-not $conda) { $conda = "conda" }
 
-$DistDir      = Join-Path $BuildDir 'dist\NeuCams'
-$ExePath      = Join-Path $DistDir 'NeuCams.exe'
-$InternalDir  = Join-Path $DistDir '_internal'
-$JsonFilesDir = Join-Path $RepoRoot 'neucams\jsonfiles'
-$PayloadZip   = Join-Path $BuildDir 'payload.zip'
+# --- Make packaging tools current (fixes 'Invalid version: cpython' warning)
+& $conda run -n $PyInstallerEnv python -m pip install --upgrade pip setuptools wheel packaging | Out-Host
 
-# ---- Sanity ----
-if (-not (Test-Path $SpecPath))     { throw "Missing $SpecPath" }
-if (-not (Test-Path $ConstructYml)) { throw "Missing $ConstructYml" }
-
-# ---- ctorenv (constructor) ----
-$haveCtorEnv = (& conda env list) -match '^\s*ctorenv\s'
-if (-not $haveCtorEnv) {
-  conda create -n $CONSTRUCTOR_ENV -c conda-forge -y python=3.11 constructor | Out-Host
-} else {
-  conda install -n $CONSTRUCTOR_ENV -c conda-forge -y constructor | Out-Host
-}
-
-# ---- neucams_env must already exist (from environment.yml) ----
-$haveNeuEnv = (& conda env list) -match '^\s*' + [regex]::Escape($PYINSTALLER_ENV) + '\s'
-if (-not $haveNeuEnv) {
-  throw "Conda env '$PYINSTALLER_ENV' not found. Create it with:  conda env create -f environment.yml"
-}
-
-# Ensure PyInstaller via pip (avoid conda solver)
-conda run -n $PYINSTALLER_ENV python -m pip install --upgrade "pyinstaller==6.15.0" pyDCAM | Out-Host
-
-# ---- Enhanced Cleaning ----
-function Clean-BuildArtifacts {
-    param([bool]$FullClean = $false)
-    
-    Write-Host ">> Cleaning build artifacts..."
-    
-    # Standard cleanup (always done)
-    $standardCleanPaths = @(
-        (Join-Path $BuildDir 'build'),
-        $DistDir,
-        $PayloadZip
-    )
-    
-    foreach ($path in $standardCleanPaths) {
-        if (Test-Path $path) {
-            Write-Host "   Removing: $path"
-            Remove-Item -Recurse -Force $path -ErrorAction SilentlyContinue
-        }
-    }
-    
-    if ($FullClean) {
-        Write-Host "   Performing FULL clean..."
-        
-        # Additional paths for full clean
-        $fullCleanPaths = @(
-            (Join-Path $BuildDir '*.exe'),           # Previous installers
-            (Join-Path $BuildDir '__pycache__'),     # Python cache
-            (Join-Path $RepoRoot '**\__pycache__'),  # All Python cache
-            (Join-Path $RepoRoot '**\*.pyc'),        # Compiled Python files
-            (Join-Path $BuildDir 'NeuCams')         # Any leftover NeuCams folder
-        )
-        
-        foreach ($pattern in $fullCleanPaths) {
-            $items = Get-ChildItem -Path $pattern -Recurse -Force -ErrorAction SilentlyContinue
-            foreach ($item in $items) {
-                Write-Host "   Removing: $($item.FullName)"
-                Remove-Item -Recurse -Force $item.FullName -ErrorAction SilentlyContinue
-            }
-        }
-        
-        # Clear conda build cache if it exists
-        try {
-            conda clean --all -y | Out-Host
-            Write-Host "   Conda cache cleared"
-        } catch {
-            Write-Host "   Conda cache clear skipped (not critical)"
-        }
-        
-        # Force garbage collection to release file handles
-        [System.GC]::Collect()
-        [System.GC]::WaitForPendingFinalizers()
-        Start-Sleep -Seconds 2
-        
-        Write-Host "   Full clean completed"
-    }
-    
-    Write-Host "   Cleanup completed"
-}
-
-# Perform cleaning based on parameters
-Clean-BuildArtifacts -FullClean $Clean
-
-# ---- Build with PyInstaller ----
-Write-Host ">> Building NeuCams.exe via PyInstaller..."
-conda run -n $PYINSTALLER_ENV python -m PyInstaller $SpecPath --clean -y | Out-Host
-
-if (-not (Test-Path $ExePath))     { throw "PyInstaller did not produce $ExePath" }
-if (-not (Test-Path $InternalDir)) { throw "Missing _internal at $InternalDir" }
-Write-Host "   OK: PyInstaller output ready."
-
-# ---- Create payload.zip (exe + _internal + jsonfiles) ----
-Write-Host ">> Creating payload.zip..."
-if (Test-Path $PayloadZip) { Remove-Item -Force $PayloadZip }
-
-$toZip = @($ExePath, $InternalDir)
-if (Test-Path $JsonFilesDir) {
-  $toZip += $JsonFilesDir
-  Write-Host "   Including jsonfiles from $JsonFilesDir"
-} else {
-  Write-Warning "No jsonfiles at $JsonFilesDir (skipping)."
-}
-
-# Enhanced zip creation with retry logic for file locking issues
-$maxRetries = 3
-$retryCount = 0
-$zipSuccess = $false
-
-while (-not $zipSuccess -and $retryCount -lt $maxRetries) {
-    try {
-        Compress-Archive -Path $toZip -DestinationPath $PayloadZip -Force
-        $zipSuccess = $true
-        Write-Host "   Payload zip created successfully"
-    }
-    catch {
-        $retryCount++
-        Write-Warning "   Zip attempt $retryCount failed: $($_.Exception.Message)"
-        
-        if ($retryCount -lt $maxRetries) {
-            Write-Host "   Waiting 3 seconds before retry..."
-            
-            # Force garbage collection to release file handles
-            [System.GC]::Collect()
-            [System.GC]::WaitForPendingFinalizers()
-            Start-Sleep -Seconds 3
-            
-            Write-Host "   Retrying zip creation..."
-        } else {
-            Write-Error "Failed to create payload.zip after $maxRetries attempts. File may be locked by another process."
-            throw $_
-        }
-    }
-}
-if (-not (Test-Path $PayloadZip)) { throw "Failed to create $PayloadZip" }
-Write-Host "   OK: payload.zip created."
-
-# ---- Run Constructor ----
-Write-Host ">> Running Constructor..."
-Push-Location $BuildDir
+# (Optional but robust) pre-install pyzmq via conda to avoid pip metadata parsing
 try {
-  conda run -n $CONSTRUCTOR_ENV python -m constructor . | Out-Host
-} finally {
-  Pop-Location
+  & $conda install -n $PyInstallerEnv -c conda-forge -y pyzmq | Out-Host
+} catch {
+  Write-Host "Skipping conda pyzmq: $($_.Exception.Message)"
 }
 
-$installer = Get-ChildItem -Path $BuildDir -Filter 'NeuCams-*-windows-x86_64.exe' |
-             Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not $installer) { throw "Constructor did not produce an installer." }
+# --- Install build deps into the SAME env PyInstaller will use
+& $conda run -n $PyInstallerEnv python -m pip install --upgrade "pyinstaller==6.15.0" pyDCAM | Out-Host
 
-Write-Host ""
-Write-Host "========== DONE =========="
-Write-Host ("Installer: {0}" -f $installer.FullName)
-Write-Host ("Payload:   {0}" -f $PayloadZip)
-Write-Host ("Dist:      {0}" -f $DistDir)
-Write-Host "=========================="
+# --- Sanity check the build env (PowerShell-safe)
+$SanityPy = Join-Path $env:TEMP "neucams_sanity_$([Guid]::NewGuid().ToString('N')).py"
+@'
+import sys
+print("python ->", sys.executable)
+try:
+    import pyDCAM
+    print("pyDCAM ->", getattr(pyDCAM, "__file__", "(namespace package)"))
+except Exception as e:
+    print("pyDCAM import failed:", e)
+'@ | Set-Content -Path $SanityPy -Encoding UTF8
+
+& $conda run -n $PyInstallerEnv python $SanityPy | Out-Host
+Remove-Item $SanityPy -Force
+
+# --- Control onefile/onedir via env var that NeuCams.spec reads
+if ($OneFile) { $env:NEUCAMS_ONEFILE = "1" } else { Remove-Item Env:\NEUCAMS_ONEFILE -ErrorAction SilentlyContinue }
+
+# --- Write build stamp (NeuCams.spec includes this file via datas)
+$StampPath = Join-Path $SpecDir "build_info.txt"
+$branch = ""; $commit = ""
+try { $branch = (git -C $RepoRoot rev-parse --abbrev-ref HEAD).Trim() } catch {}
+try { $commit = (git -C $RepoRoot rev-parse HEAD).Trim() } catch {}
+$builderPy = (& $conda run -n $PyInstallerEnv python -c "import sys; print(sys.executable)") -join ""
+@(
+  "built=$(Get-Date -Format o)"
+  "root=$RepoRoot"
+  "spec=$SpecPath"
+  "branch=$branch"
+  "commit=$commit"
+  "builder_env=$builderPy"
+) -join "`n" | Set-Content -NoNewline $StampPath
+Write-Host "Wrote build stamp: $StampPath"
+
+# --- Clean pip cache (optional) to avoid stale wheels
+& $conda run -n $PyInstallerEnv python -m pip cache purge | Out-Host
+
+# --- Run PyInstaller
+$pyiArgs = @($SpecPath, "--clean", "-y")
+if ($DebugPyInstaller) { $pyiArgs += @("--log-level=DEBUG") }
+
+& $conda run -n $PyInstallerEnv python -m PyInstaller @pyiArgs | Out-Host
+
+if (-not (Test-Path $DistDir)) {
+  throw "Expected PyInstaller output at $DistDir, but it wasn't created."
+}
+
+# --- Rebuild payload.zip from the fresh dist output
+if (Test-Path $PayloadZip) { Remove-Item -Force $PayloadZip }
+Compress-Archive -Path (Join-Path $DistDir '*') -DestinationPath $PayloadZip -Force
+Write-Host "Rebuilt payload: $PayloadZip"
+
+# --- If construct.yaml exists, build installer with constructor
+if (Test-Path $ConstructYml) {
+  Write-Host "Found construct.yaml — building installer with constructor..."
+  # Ensure constructor is present
+  & $conda run -n $PyInstallerEnv python -m pip install --upgrade constructor | Out-Host
+  # Build installer into /build
+  & $conda run -n $PyInstallerEnv constructor $RepoRoot --output-dir $BuildDir | Out-Host
+  Write-Host "Installer build finished. Check: $BuildDir"
+} else {
+  Write-Host "No construct.yaml found — skipped constructor step. You can run it later if needed."
+}
+
+Write-Host "`nDone."
+Write-Host "Dist folder : $DistDir"
+Write-Host "Payload     : $PayloadZip"
+Write-Host "Build output: $BuildDir"
