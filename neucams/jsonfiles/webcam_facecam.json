@@ -14,31 +14,16 @@
                 "saturation": 0.5,
                 "verbose": true
             }
-        },
-        {
-            "description": "webcam_external",
-            "driver": "opencv", 
-            "id": 1,
-            "params": {
-                "frame_rate": 30,
-                "width": 640,
-                "height": 480,
-                "auto_exposure": false,
-                "exposure": 0.3,
-                "brightness": 0.6,
-                "contrast": 0.7,
-                "verbose": true
-            }
         }
     ],
-    
+
     "recorder_params": {
         "compress": 0,
-        "data_folder": "C:\\Users\\User\\data",
+        "data_folder": "C:\\Users\\euclient\\local\\recordings",
         "recorder": "opencv",
         "recorder_sleep_time": 0.05
     },
-    
+
     "server_params": {
         "server": "udp",
         "udp_enable": true,
@@ -46,4 +31,4 @@
         "server_port": 9999,
         "server_refresh_time": 30
     }
-} 
+}
