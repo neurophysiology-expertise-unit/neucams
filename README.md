@@ -35,9 +35,72 @@ This aims to facilitate video acquisition and automation of experiments, uses se
  *  Remote control over UDP (start/stop, soft trigger, set experiment name)
 
 
-## Usage:
+## Installation (run from source)
 
-Launch NeuCams from the Start Menu (installer) or run: `python -m neucams`.
+Tested on Windows 10/11 64-bit. You need [Miniconda/Anaconda](https://docs.conda.io/en/latest/miniconda.html)
+and git.
+
+```powershell
+# 1. Clone (default branch is 'main' -- the working one)
+git clone https://github.com/neurophsiology-expertise-unit/neucams.git
+cd neucams
+
+# 2. Create the conda environment (Python 3.9, PyQt5, OpenCV, ffmpeg, zeromq,
+#    and the camera SDK Python bindings: vmbpy / harvesters+genicam / pyDCAM).
+#    The env name 'neucams_env' comes from environment.yml.
+conda env create -f environment.yml
+conda activate neucams_env
+
+# 3. Run (IMPORTANT: from the OUTER neucams folder -- there are two nested
+#    folders both named 'neucams').
+python -m neucams
+```
+
+> **Two nested folders, both named `neucams`.** Always run `python -m neucams`
+> from the *outer* one (the repo root), or the package import fails.
+
+### Camera vendor SDKs
+
+The Python bindings are installed by `environment.yml`, but each camera family
+also needs its **vendor runtime/driver** installed on the machine:
+
+| Driver     | Camera            | Vendor runtime to install |
+|------------|-------------------|---------------------------|
+| `avt`      | Allied Vision     | Vimba/Vimba X SDK (GigE + USB transport layers) |
+| `genicam`  | Teledyne Dalsa &c | a GenTL producer, e.g. Matrix Vision mvGenTL (provides the `.cti`); Dalsa is free-run only |
+| `hamamatsu`| Hamamatsu ORCA    | DCAM-API drivers/runtime (Windows only) |
+| `opencv`   | USB webcam/facecam| none (works out of the box) |
+
+See `camera_instructions.md` for per-camera setup (incl. GigE NIC/IP config)
+and `jsonreadme.md` for the config-file format.
+
+## Usage
+
+```powershell
+conda activate neucams_env
+# from the repo root (outer neucams folder):
+python -m neucams                                   # opens the launcher/splash
+python -m neucams -p neucams/jsonfiles/ch_camera.json   # load a config directly
+python -m neucams -p <config.json> --verbose        # verbose logging
+```
+
+Ready-made config presets live in `neucams/jsonfiles/` (e.g. `ch_camera.json`
+for the AVT Mako, `single_hama.json`, `single_dalsa2.json`, and
+`dalsa_hamamatsu_avt.json` as a multi-camera reference).
+
+## Building the standalone Windows executable / installer
+
+PyInstaller + a Conda-Constructor installer. From the `neucams_env` env:
+
+```powershell
+# from the repo root:
+build_neucams\build_installer.ps1        # builds dist\NeuCams\NeuCams.exe (+ installer if construct.yaml present)
+```
+
+The build bundles the camera runtime DLLs from `build_neucams/{dcam,gentl,vmbpy}`
+via the `rthook_env.py` runtime hook, and `NeuCams.spec` asserts it is packaging
+this repo's `neucams` package (so it can't silently build a stale copy). Full
+details in `installation_readme.md`.
 
 ## Configuration files:
 
