@@ -331,32 +331,6 @@ class NeuCamsWindow(QMainWindow):
             logging.getLogger().warning(f"UDP server could not be initialized: {e}")
 
 
-    def _handle_master_start_via_udp(self, address):
-        if self._all_cameras_running():
-            display(f'UDP start command received but cameras already running [{address}]')
-            self.server.send('ok=already_running', address)
-            return
-
-        if not self.actionMasterStartStop.isEnabled():
-            display(f'UDP start ignored: Master control not available [{address}]')
-            self.server.send('error=master_disabled', address)
-            return
-
-        # Arm Record (optional; remove if you don't want this)
-        for w in self.cam_widgets:
-            cb = getattr(w, "record_checkBox", None)
-            if cb is not None and cb.isEnabled() and not cb.isChecked():
-                cb.setChecked(True)
-
-        try:
-            self._broadcast_trigger_setting()
-        except Exception:
-            pass
-
-        display(f'UDP master start command received [{address}]')
-        self.actionMasterStartStop.setChecked(True)  # this triggers your normal start path
-        self.server.send('ok=start', address)
-
     def _log(self, msg: str):
         """Safe UI+console log helper."""
         try:
@@ -443,79 +417,6 @@ class NeuCamsWindow(QMainWindow):
                 pass
 
         return out
-
-    def _handle_master_stop_via_udp(self, address):
-        """Handle UDP 'stop' command - master stop all cameras."""
-        if self._all_cameras_stopped():
-            display(f'UDP stop command received but cameras already stopped [{address}]')
-            self.server.send('ok=already_stopped', address)
-            return
-
-        # NEW: don't flip the button if master control is disabled (mixed state, etc.)
-        if not self.actionMasterStartStop.isEnabled():
-            display(f'UDP stop ignored: Master control not available [{address}]')
-            self.server.send('error=master_disabled', address)
-            return
-
-        display(f'UDP master stop command received [{address}]')
-        self.actionMasterStartStop.setChecked(False)  # Triggers _master_toggled
-        self.server.send('ok=stop', address)
-    # widgets.py
-
-    def _udp_apply_run_and_unlock(self, run_spec: str, address=None):
-        # Normalize input like: strip quotes/spaces
-        run_spec = str(run_spec).strip().strip('"').strip("'")
-
-        # 1) Reflect in the text box (so the Set button lights up, etc.)
-        try:
-            self.run_name_edit.setText(run_spec)
-        except Exception:
-            pass
-
-        # 2) Apply per-camera save folders (respects base data dir + per-camera subdir)
-        try:
-            self._on_set_run_name()   # your existing validator/applier; also enables Record UI
-        except Exception as e:
-            display(f"[UDP] _on_set_run_name() failed: {e}", level="error")
-
-        # 3) Arm Record so a later Master Start will actually write files (but do not start now)
-        try:
-            self._update_record_controls_enabled()
-            for w in getattr(self, "cam_widgets", []):
-                cb = getattr(w, "record_checkBox", None)
-                if cb is not None and cb.isEnabled() and not cb.isChecked():
-                    cb.setChecked(True)
-        except Exception:
-            pass
-
-        # 4) Log where each camera will save
-        try:
-            base = self._get_data_folder() or ""
-        except Exception:
-            base = ""
-        for w in getattr(self, "cam_widgets", []):
-            ch = getattr(w, "cam_handler", None)
-            descr = ch.cam_dict.get("description", "") if ch and hasattr(ch, "cam_dict") else ""
-            dest = None
-            if ch and hasattr(ch, "get_current_save_folder"):
-                try:
-                    dest = ch.get_current_save_folder()
-                except Exception:
-                    pass
-            if not dest:
-                from os.path import join, normpath
-                dest = normpath(join(base, descr, run_spec)) if (base and descr and run_spec) else "<unknown>"
-            display(f"[UDP]   {descr or '<cam>'}: {dest}", level="info")
-
-        display(f"[UDP] Applied run name: {run_spec!r} (base={base!r})", level="info")
-
-        # 5) ACK to sender
-        try:
-            if address and getattr(self, "server", None):
-                self.server.send("ok=setrun", address)
-        except Exception:
-            pass
-
 
     def _process_server_messages(self):
         msgs = self._recv_udp_burst()  # [(text, addr), ...]

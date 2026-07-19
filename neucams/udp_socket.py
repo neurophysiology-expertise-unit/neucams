@@ -38,7 +38,9 @@ class UDPSocket:
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
         self.close()
-        return True
+        # Do NOT return True: that would suppress every exception raised inside
+        # the `with` block, hiding real errors.
+        return False
 
     def receive(self):
         try:

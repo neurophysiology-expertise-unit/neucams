@@ -47,7 +47,6 @@ class GenericCam:
         pass
     
     def set_param(self, param, val):
-        # print(f"Set param {param} : {val}", flush=True)
         self.params[param] = val
         
     def get_param(self, param : str):

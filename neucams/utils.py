@@ -25,47 +25,24 @@ DEFAULT_SERVER_PARAMS = {
                          }
                       
 DEFAULT_RECORDER_PARAMS = {
-                            'recorder' : 'opencv',
-                            'data_folder': 'C:\\Users\\User\\data',
+                            'recorder': 'opencv',      # opencv | tiff | ffmpeg | binary
+                            'data_folder': path.join(path.expanduser('~'), 'neucams_data'),
                             # 'experiment_folder' is optional; runtime defaults to 'test' if missing
-                            'frames_per_file': 256,
                             'compress': 0
                           }
 
+# Starter template written when no config exists. Uses a real, always-present
+# driver (opencv) with valid parameter names so the template runs as-is; copy
+# one of the jsonfiles/ presets for AVT/Dalsa/Hamamatsu setups.
 DEFAULT_CAM_INFOS = [
-                     {'description':'facecam',
-                      'name':'Mako G-030B',
-                      'driver':'avt',
-                      'params': {'gain':10,
-                                 'frameRate':31.,
-                                 'TriggerSource':'Line1',
-                                 'TriggerMode':'LevelHigh',
-                                 'NBackgroundFrames':1.}},
-                     {'description':'1photon',
-                      'name':'qcam',
-                      'id':0,
-                      'driver':'QImaging',
-                      'params': {'gain':1500,
-                                 'triggerType':1,
-                                 'binning':2,
-                                 'exposure':100000,
-                                 'frameRate':0.1}},
-                     {'description':'webcam',
-                      'name':'webcam',
-                      'id':0,
-                      'driver':'OpenCV'
-                      },
-                     {'description':'1photon-2',
-                      'name':'pco.edge',
-                      'id':0,
-                      'driver':'pco',
-                      'params': {'triggerType':0,
-                                 'exposure':33},
-                      'recorder_params': {'recorder' : 'binary'}}
+                     {'description': 'webcam',
+                      'driver': 'opencv',
+                      'id': 0,
+                      'params': {'frame_rate': 30, 'width': 1280, 'height': 720}},
                       ]
 
 def get_default_folder():
-    return path.join(path.expanduser('~'), 'labcams')
+    return path.join(path.expanduser('~'), 'neucams')
 
 def get_default_preferences():
     return {'cams': DEFAULT_CAM_INFOS, 'recorder_params': DEFAULT_RECORDER_PARAMS, 'server_params' : DEFAULT_SERVER_PARAMS}
@@ -96,7 +73,6 @@ def get_preferences(filepath = None, create_template = True):
             return error_msg, pref
         except Exception as e:
             return f"Error loading config file {filepath}: {e}", pref
-        # Only run check_preferences if JSON loaded successfully
     else:
         if create_template:
             write_template_to_file(filepath)
@@ -105,12 +81,8 @@ def get_preferences(filepath = None, create_template = True):
 def check_preferences(pref, valid_drivers=None):
     error_messages = ""
     
-    def check_missing_keys(dict, required_keys):
-        missing_keys = []
-        for key in required_keys:
-            if not key in dict:
-                missing_keys.append(key)
-        return missing_keys
+    def check_missing_keys(d, required_keys):
+        return [key for key in required_keys if key not in d]
                 
     cams = pref.get("cams", [])
     required_cam_keys = ['description', 'driver']

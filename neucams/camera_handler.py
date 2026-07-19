@@ -358,11 +358,13 @@ class CameraHandler(Process):
     def init_run(self):
         self.frame_nr = 0
         self.lastframeid = -1
-        # Only set filepath if writer exists (will be set when recording starts)
-        if self._master_t0_ns is not None:
-            self.writer.set_master_t0_ns(self._master_t0_ns)
-
+        # The writer only exists while recording, so guard EVERY writer call:
+        # previously set_master_t0_ns() ran unconditionally and would crash
+        # with AttributeError on None whenever a master clock was set without
+        # recording.
         if self.writer is not None:
+            if self._master_t0_ns is not None:
+                self.writer.set_master_t0_ns(self._master_t0_ns)
             self.writer.set_filepath(self.get_new_filepath())
         self.camera_ready.set()
     
@@ -494,8 +496,9 @@ class CameraHandler(Process):
         self._process_params()
 
     def _process_params(self):
-        # Handle all pending requests in the queue
-        params_to_set = False
+        # Handle all pending requests in the queue. Note: 'set' only stages the
+        # value on the camera object; it is applied at acquisition start
+        # (wait_for_trigger -> apply_params), not here.
         while not self.cam_param_InQ.empty():
             try:
                 message = self.cam_param_InQ.get_nowait()
@@ -515,7 +518,6 @@ class CameraHandler(Process):
                 elif command == 'set' and len(message) == 3:
                     _, param, val = message
                     self.cam.set_param(param, val)
-                    params_to_set = True
 
                 elif command == 'set_folder' and len(message) == 2:
                     # Update folder path immediately; if writer exists, refresh filepath
@@ -529,11 +531,6 @@ class CameraHandler(Process):
 
             except queue.Empty:
                 break  # No more messages
-        
-        # If any 'set' commands were processed, apply them in one batch
-        if params_to_set:
-            pass
-            # self.cam.apply_params() #-- DEFERRED until acquisition start
 
     # camera_handler.py -> in set_cam_param()
     def set_cam_param(self, param: str, val):
@@ -550,7 +547,6 @@ class CameraHandler(Process):
 
 
     def query_cam_params(self):
-        # self.cam_param_OutQ.put(None) # Not needed with clear_queue
         self.cam_param_InQ.put(('get',))
 
     def get_cam_params(self, timeout=0.2):
