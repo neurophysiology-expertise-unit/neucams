@@ -68,7 +68,6 @@ class FileWriter(Process):
         self.ts_file_handler = None
 
         # Timestamp normalization
-        self.master_t0_ns = None
         self._ts_offset = None
         self._ts_scale = None    # chosen from {1, 1e3, 1e6, 1e9} to convert to seconds
         self._ts_deltas = []     # collect a few deltas to infer scale robustly
@@ -91,8 +90,6 @@ class FileWriter(Process):
         self.close()
         self.join()
 
-    def set_master_t0_ns(self, t0_ns: int):
-        self.master_t0_ns = int(t0_ns)
     # ---------- Path API ----------
 
     def get_filepath(self):
@@ -215,11 +212,6 @@ class FileWriter(Process):
             # Open the timelog FIRST, then write the header/metadata
             self.ts_file_handler = open(ts_path, 'w', encoding='utf-8')
             self.ts_file_handler.write('# frame_index\ttimestamp_seconds\n')
-            # Optional: write master t0 if present (does not re-import datetime)
-            if getattr(self, 'master_t0_ns', None) is not None:
-                t0_ns = float(self.master_t0_ns)
-                self.ts_file_handler.write(f'# master_t0_ns\t{int(t0_ns)}\n')
-                self.ts_file_handler.write(f'# master_t0_iso\t{datetime.fromtimestamp(t0_ns / 1e9).isoformat()}\n')
             self.ts_file_handler.flush()
 
             # Publish the exact basename so data files match the timelog prefix

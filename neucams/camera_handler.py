@@ -73,7 +73,6 @@ class CameraHandler(Process):
         self.folder_path_array = Array('u',' ' * 1024) #can set folder
         self.filepath_array = Array('u',' ' * 1024) #filepath is readonly
         
-        self._master_t0_ns = None
         self.run_nr = 0
         self.frame_nr = 0
         
@@ -100,15 +99,6 @@ class CameraHandler(Process):
         setattr(cam, "_open_for_format", True)
         return cam
     
-    def set_master_t0_ns(self, t0_ns: int):
-        self._master_t0_ns = int(t0_ns)
-        try:
-            if getattr(self, "writer", None) is not None and hasattr(self.writer, "set_master_t0_ns"):
-                self.writer.set_master_t0_ns(self._master_t0_ns)
-        except Exception:
-            pass
-
-
     def _init_framebuffer(self):
         with self._open_cam_for_format() as cam:
             dtype  = cam.format.get('dtype', None)
@@ -358,13 +348,8 @@ class CameraHandler(Process):
     def init_run(self):
         self.frame_nr = 0
         self.lastframeid = -1
-        # The writer only exists while recording, so guard EVERY writer call:
-        # previously set_master_t0_ns() ran unconditionally and would crash
-        # with AttributeError on None whenever a master clock was set without
-        # recording.
+        # The writer only exists while recording.
         if self.writer is not None:
-            if self._master_t0_ns is not None:
-                self.writer.set_master_t0_ns(self._master_t0_ns)
             self.writer.set_filepath(self.get_new_filepath())
         self.camera_ready.set()
     
