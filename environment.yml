@@ -1,85 +1,43 @@
+# Full env modernization (TEST BRANCH: env-modernize-py312).
+#
+# The aggressive counterpart to the opencv-4.11-bump branch: moves Python
+# 3.9 -> 3.12 in addition to OpenCV 4.5 -> 4.11. Python 3.9 reaches end-of-life
+# in Oct 2025, so this is the genuinely long-lasting target.
+#
+# Why this is now possible: the ONLY Python-version-limiting dependency was the
+# compiled `genicam` bindings (used by harvesters for the Dalsa camera), pinned
+# at 1.4.0. genicam 1.5.x ships wheels up to CPython 3.13, so it no longer caps
+# the Python version. The other camera SDKs don't care about the Python version:
+# vmbpy (AVT) is pure Python (>=3.7) and pyDCAM (Hamamatsu) is a ctypes wrapper.
+#
+# Hand-written minimal env (only what neucams imports); conda solves the rest.
+#
+# Kept EXACT on purpose -- these match vendor runtimes installed on the machine,
+# do not bump without also updating the corresponding runtime:
+#   - vmbpy==1.1.1   -> Allied Vision Vimba X C runtime
+#   - pyDCAM==0.0.1  -> Hamamatsu DCAM-API runtime
+#
+# HOW TO TEST: conda env create -f environment.yml -n neucams_py312 (fresh name
+# keeps your working env), activate, and smoke-test AVT + Dalsa + Hamamatsu +
+# webcam. The two things most likely to need attention are the Dalsa GenTL
+# producer (.cti) and pyDCAM under Py3.12 -- both should be fine (GenTL is
+# backward-compatible, pyDCAM is ctypes) but that is what this branch verifies.
+# Roll back = check out main's environment.yml.
 name: neucams_env
 channels:
   - conda-forge
-  - defaults
 dependencies:
-  - blosc=1.21.0
-  - brotli=1.0.9
-  - bzip2=1.0.8
-  - ca-certificates=2020.12.5
-  - certifi=2020.12.5
-  - charls=2.2.0
-  - ffmpeg=4.3.1
-  - freeglut=3.2.1
-  - freetype=2.10.4
-  - giflib=5.2.1
-  - icu=68.1
-  - imagecodecs=2021.1.11
-  - intel-openmp=2024.2.1
-  - jasper=2.0.14
-  - jpeg=9d
-  - jxrlib=1.1
-  - lcms2=2.11
-  - lerc=2.2.1
-  - libaec=1.0.4
-  - libopencv=4.5.0
-  - libpng=1.6.37
-  - libsodium=1.0.18
-  - libtiff=4.2.0
-  - libwebp-base=1.1.0
-  - libzopfli=1.0.3
-  - lz4-c=1.9.3
-  - m2w64-gcc-libgfortran=5.3.0
-  - m2w64-gcc-libs=5.3.0
-  - m2w64-gcc-libs-core=5.3.0
-  - m2w64-gmp=6.1.0
-  - m2w64-libwinpthread-git=5.0.0.4634.697f757
-  - mkl=2024.2.2
-  - msys2-conda-epoch=20160418
-  - natsort=7.1.0
-  - numpy=1.19.5
-  - olefile=0.46
-  - opencv=4.5.0
-  - openjpeg=2.4.0
-  - openssl=1.1.1i
-  - pandas=1.2.0
-  - pillow=8.1.0
-  - py-opencv=4.5.0
-  - pyqt=5.12.3
-  - pyqt-impl=5.12.3
-  - pyqt5-sip=4.19.18
-  - pyqtchart=5.12
-  - pyqtgraph=0.11.1
-  - pyqtwebengine=5.12.1
-  - pyserial=3.5
-  - python=3.9.1
-  - python-dateutil=2.8.1
-  - python_abi=3.9
-  - pytz=2020.5
-  - pyzmq=20.0.0
-  - qt=5.12.9
-  - setuptools=49.6.0
-  - six=1.15.0
-  - snappy=1.1.8
-  - sqlite=3.34.0
-  - tifffile=2021.1.11
-  - tk=8.6.10
-  - tqdm=4.56.0
-  - tzdata=2021a
-  - vc=14.2
-  - vs2015_runtime=14.28.29325
-  - wheel=0.36.2
-  - wincertstore=0.2
-  - xz=5.2.5
-  - zeromq=4.3.3
-  - zfp=0.5.5
-  - zlib=1.2.11
-  - zstd=1.4.8
-  - pyyaml=6.0.2
-  - scikit-video=1.1.11
-  - pip=25.1.1
+  - python=3.12
+  - opencv=4.11
+  - numpy                  # let conda pick a py3.12-compatible numpy
+  - pyqt>=5.15,<6          # PyQt5 (the GUI targets it) -- stay off PyQt6
+  - pyqtgraph              # promoted widget in view/UI_display_settings.ui
+  - ffmpeg                 # backend for scikit-video's FFmpegWriter
+  - tifffile               # TiffWriter
+  - scikit-video           # FFMPEGWriter uses skvideo.io.FFmpegWriter
+  - pip
   - pip:
-    - genicam==1.4.0
-    - harvesters==1.4.3
-    - vmbpy==1.1.1
-    - pyDCAM==0.0.1
+    - genicam>=1.5,<1.6     # 1.5.x adds cp312/cp313 wheels -> unblocks the Python bump
+    - harvesters==1.4.3     # latest; pure Python; requires genicam>=1.2
+    - vmbpy==1.1.1          # match the installed Vimba X runtime (pure Python, py3.12 OK)
+    - pyDCAM==0.0.1         # match the installed DCAM-API runtime (ctypes)
