@@ -14,8 +14,10 @@ from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtWidgets import (QAction, QApplication, QMainWindow, QMessageBox,
                              QMdiSubWindow)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-# Delay before starting cameras via Master Start (ms): allows writers to arm
-ARM_DELAY_MS = 3000
+# Delay before starting cameras via Master Start (ms): allows writers to arm.
+# Kept short: saving is armed before this timer fires, so the writer is ready
+# well ahead. Larger values just add dead time between "start" and first frame.
+ARM_DELAY_MS = 500
 from collections import deque
 
 from neucams.udp_socket import UDPSocket
@@ -536,6 +538,15 @@ class NeuCamsWindow(QMainWindow):
             if low in {"start", "go", "run", "master_start"}:
                 self._log(f"UDP master start command received {addr}")
                 try:
+                    # A UDP start means "record" (e.g. thermo Start Recording),
+                    # so arm saving for any camera that already has a save
+                    # folder set -- otherwise the camera only acquires (preview)
+                    # and writes NO data. Manual Master Start from the GUI does
+                    # NOT pass through here, so preview-without-record still works.
+                    for w in self.cam_widgets:
+                        cb = getattr(w, "record_checkBox", None)
+                        if cb is not None and cb.isEnabled() and not cb.isChecked():
+                            cb.setChecked(True)  # -> _record(True) -> start_saving()
                     # Let the button toggle call _master_toggled()
                     if hasattr(self, "actionMasterStartStop"):
                         if not self._all_cameras_running():
@@ -593,6 +604,18 @@ class NeuCamsWindow(QMainWindow):
             if run_name:
                 # Normalize separators and drop quotes
                 run_name = run_name.strip().strip('"\'')
+
+                # Reflect the name in the visible run-name field. Its
+                # textChanged handlers then update the global save-path label,
+                # enable the Set button, and refresh the record controls -- so
+                # a UDP folder= is actually SEEN in the UI. Without this the
+                # folders were set internally but the operator saw nothing
+                # until acquisition started. (Record is left for the operator
+                # to tick; we do not auto-arm it.)
+                try:
+                    self.run_name_edit.setText(run_name)
+                except Exception:
+                    pass
 
                 # Apply to all cameras (update writer folders and GUI labels)
                 try:
@@ -737,16 +760,25 @@ class NeuCamsWindow(QMainWindow):
         # Enable only when uniform; disable when mixed
         self.actionMasterStartStop.setEnabled(not mixed)
 
-        if all_running:
-            if not self.actionMasterStartStop.isChecked():
+        # Reflect state ONLY. This runs every 150 ms; setChecked() here fires
+        # actionMasterStartStop.toggled -> _master_toggled, which starts/stops
+        # every camera. Without blocking signals that forms a feedback loop:
+        # the moment you Stop a camera, the next sync tick re-issues a Start
+        # (the "stop, then immediately restarts" bug). Block signals so this
+        # only updates the button's appearance; genuine user clicks are
+        # unaffected (they aren't routed through here).
+        self.actionMasterStartStop.blockSignals(True)
+        try:
+            if all_running:
                 self.actionMasterStartStop.setChecked(True)
-            self.actionMasterStartStop.setText("Master Stop")
-        elif all_stopped:
-            if self.actionMasterStartStop.isChecked():
+                self.actionMasterStartStop.setText("Master Stop")
+            elif all_stopped:
                 self.actionMasterStartStop.setChecked(False)
-            self.actionMasterStartStop.setText("Master Start")
-        else:
-            self.actionMasterStartStop.setText("Master (mixed)")
+                self.actionMasterStartStop.setText("Master Start")
+            else:
+                self.actionMasterStartStop.setText("Master (mixed)")
+        finally:
+            self.actionMasterStartStop.blockSignals(False)
 
     def _master_toggled(self, checked: bool):
         # Safety: if mixed, bail (should already be disabled by caller)
@@ -1013,17 +1045,25 @@ class NeuCamsWindow(QMainWindow):
             # Structure: <data_folder>/<camera>/<normalized_name>
             new_folder = join(data_folder, cam_desc, normalized_name)
 
-            # Ask handler to apply folder immediately (writer-aware)
+            # Apply the folder via the SHARED array FIRST (folder_path_array is
+            # a multiprocessing.Array, visible to both the GUI and the camera
+            # process at once), THEN queue the command so a live writer also
+            # refreshes its filepath. Previously only the queue was used, but
+            # it is drained inside the acquisition loop -- so a name set while
+            # the camera was STOPPED never took effect, leaving both the actual
+            # save folder and this label a run behind (showed _2 while the name
+            # was _3).
+            try:
+                ch.set_folder_path(new_folder)
+            except Exception:
+                pass
             try:
                 ch.cam_param_InQ.put(('set_folder', new_folder))
             except Exception:
-                # Fallback to shared-array update
-                try:
-                    ch.set_folder_path(new_folder)
-                except Exception:
-                    pass
+                pass
 
-            # Refresh the filepath preview used by UI labels
+            # Refresh the filepath preview used by UI labels (the shared folder
+            # array is now current, so this reads the new name).
             try:
                 new_fp = ch.get_new_filepath()
             except Exception:
