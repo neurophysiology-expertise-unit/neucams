@@ -54,64 +54,76 @@ class OpenCVCam(GenericCam):
             'brightness', 'contrast', 'saturation', 'hue', 'gain'
         ]
                 
+        # One shared capture handle, opened lazily and reused (see _ensure_cap).
+        self.cap = None
+
         # Initialize the camera to get format information
         self._init_camera_format()
-        
-    def _init_camera_format(self):
-        """Initialize camera and determine format information"""
+
+    def _ensure_cap(self):
+        """Open the capture device once and reuse the handle. Returns the
+        VideoCapture, or None if it could not be opened.
+
+        This replaces what used to be up to three separate cv2.VideoCapture()
+        opens per instance (format probe + is_connected + open). Each open is
+        slow and can hang on the Windows MSMF backend, so we open once and
+        share the handle across probing, connection checks, and acquisition.
+        """
+        if self.cap is not None and self.cap.isOpened():
+            return self.cap
         cap = cv2.VideoCapture(self.cam_id)
         if not cap.isOpened():
             display(f"ERROR: Could not open OpenCV camera {self.cam_id}", level='error')
-            self.format = {'width': 640, 'height': 480, 'dtype': np.uint8, 'n_chan': 3}
             cap.release()
+            self.cap = None
+            return None
+        self.cap = cap
+        return self.cap
+
+    def _init_camera_format(self):
+        """Determine format info from a test frame (opens the device once)."""
+        cap = self._ensure_cap()
+        if cap is None:
+            self.format = {'width': 640, 'height': 480, 'dtype': np.uint8, 'n_chan': 3}
             return False
-            
-        # Try to set desired resolution
+
+        # Try to set desired resolution before probing the frame size
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.params.get('width', 640))
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.params.get('height', 480))
         cap.set(cv2.CAP_PROP_FPS, self.params.get('frame_rate', 30))
-        
+
         # Read a test frame to get actual format
         ret, frame = cap.read()
         if ret and frame is not None:
             # OpenCV typically returns BGR, we'll convert to RGB in image()
             height, width = frame.shape[:2]
             n_chan = 3 if len(frame.shape) == 3 else 1
-            
             self.format = {
                 'width': width,
-                'height': height, 
+                'height': height,
                 'dtype': np.uint8,  # OpenCV typically uses uint8
-                'n_chan': n_chan
+                'n_chan': n_chan,
             }
-            
             display(f"[OpenCV {self.cam_id}] Initialized: {width}x{height}, {n_chan} channels")
         else:
             display(f"ERROR: Could not read test frame from OpenCV camera {self.cam_id}", level='error')
             self.format = {'width': 640, 'height': 480, 'dtype': np.uint8, 'n_chan': 3}
-            
-        cap.release()
         return ret
-        
+
     def is_connected(self):
-        """Check if camera is available"""
-        cap = cv2.VideoCapture(self.cam_id)
-        is_open = cap.isOpened()
-        if is_open:
-            # Try to read a frame to make sure it's actually working
-            ret, _ = cap.read()
-            is_open = ret
-        cap.release()
-        return is_open
-        
+        """Camera available if it opens and yields a frame (reuses the handle)."""
+        cap = self._ensure_cap()
+        if cap is None:
+            return False
+        ret, _ = cap.read()
+        return bool(ret)
+
     def open(self):
-        """Open camera for acquisition"""
-        self.cap = cv2.VideoCapture(self.cam_id)
-        if not self.cap.isOpened():
+        """Open camera for acquisition (reuses the shared handle) and apply settings."""
+        cap = self._ensure_cap()
+        if cap is None:
             display(f"ERROR: Failed to open OpenCV camera {self.cam_id}", level='error')
             return False
-            
-        # Apply camera settings
         self._apply_settings()
         display(f"[OpenCV {self.cam_id}] Camera opened and configured")
         return True
