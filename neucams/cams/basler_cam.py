@@ -114,12 +114,17 @@ class BaslerCam(GenericCam):
         if triggered:
             self._set('TriggerSource', p['trigger_source'])
             self._set('TriggerActivation', p['trigger_activation'])
-        # exposure-active out (classic ace: Out1, ace 2: Line2) for logging on the stim unit
+        # exposure-active out (classic ace: Out1, ace 2: Line2) for logging on the stim unit.
+        # ace 2 Line2 is a GPIO that powers up as Input: LineSource alone drives nothing.
         if p.get('output_line_source'):
-            for line in ('Out1', 'Line2'):
-                if self._set('LineSelector', line):
-                    self._set('LineSource', p['output_line_source'])
-                    break
+            lines = list(self.cam.LineSelector.GetSymbolics())
+            line = next((l for l in ('Out1', 'Line2') if l in lines), None)
+            if line is None:
+                display(f"[{self.name}] no output line among {lines}", level='warning')
+            else:
+                self._set('LineSelector', line)
+                self._set('LineMode', 'Output')  # not writable on output-only Out1: skipped
+                self._set('LineSource', p['output_line_source'])
 
     def set_param(self, param, val):
         self.params[param] = val  # applied at acquisition start (handler calls apply_params)
