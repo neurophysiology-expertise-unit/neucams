@@ -1,0 +1,25 @@
+{
+    "cams": [
+        {
+            "description": "acA1300",
+            "driver": "basler",
+            "serial_number": "23414630",
+            "params": {
+                "frame_rate": 60,
+                "exposure": 5000,
+                "trigger_mode": "Off",
+                "trigger_source": "Line1",
+                "output_line_source": "ExposureActive"
+            }
+        }
+    ],
+    "recorder_params": { "compress": 0, "data_folder": "/tmp/neucams",
+      "experiment_folder": "basler_test", "recorder": "binary", "recorder_sleep_time": 0.05 },
+    "server_params": {
+        "server": "udp",
+        "udp_enable": true,
+        "server_ip": "0.0.0.0",
+        "server_port": 23160,
+        "server_refresh_time": 30
+    }
+}

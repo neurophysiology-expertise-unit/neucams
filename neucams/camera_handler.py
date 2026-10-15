@@ -26,6 +26,7 @@ class CameraFactory:
         'genicam': ('cams.genicam', 'GenICam'),
         'hamamatsu': ('cams.hamamatsu_cam', 'HamamatsuCam'),
         'opencv': ('cams.opencv_cam', 'OpenCVCam'),
+        'basler': ('cams.basler_cam', 'BaslerCam'),
     }
 
     @staticmethod
@@ -37,7 +38,7 @@ class CameraFactory:
         cam_class = getattr(module, class_name)
 
         # Pass serial_number for drivers that can use it (hamamatsu, avt, genicam passes it as cam_id already)
-        if driver in ('hamamatsu','avt'):
+        if driver in ('hamamatsu','avt','basler'):
             return cam_class(cam_id=cam_id, params=params, serial_number=serial_number)
         else:
             return cam_class(cam_id=cam_id, params=params)
@@ -129,7 +130,7 @@ class CameraHandler(Process):
                 supported = False
                 # AVT supports trigger; GenICam supports if node exists
                 drv = str(self.cam_dict.get('driver', '')).lower()
-                if drv == 'avt':
+                if drv in ('avt', 'basler'):
                     supported = True
                 elif drv == 'genicam':
                     nm = getattr(cam, 'features', None)
@@ -326,8 +327,8 @@ class CameraHandler(Process):
         # Decide cam_id policy per driver
         if cam_type == 'hamamatsu':
             cam_id = None  # resolved by serial in the driver
-        elif cam_type == 'avt':
-            # Let the AVT driver resolve by serial itself; keep optional 'id' if provided
+        elif cam_type in ('avt', 'basler'):
+            # Let the AVT/Basler driver resolve by serial itself; keep optional 'id' if provided
             cam_id = cam_dict_copy.get('id', None)
         else:
             # genicam: resolve by serial -> cam_id (or fall back to 'id')

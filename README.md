@@ -35,6 +35,7 @@ This aims to facilitate video acquisition and automation of experiments, uses se
  * Teledyne Dalsa via GenICam/GenTL (free-run only; triggers disabled)
  * Hamamatsu ORCA via DCAM-API (pyDCAM)
  * USB webcams/facecams via OpenCV
+ * Basler GigE and USB3 (ace, ace 2) via pypylon
 
 ### Features:
 
@@ -126,6 +127,7 @@ Available camera drivers:
  * `genicam` - Teledyne Dalsa and other GenICam devices via a GenTL producer (e.g., Matrix Vision mvGenTL). Note: Dalsa runs free-run only; trigger control is disabled.
  * `hamamatsu` - Hamamatsu ORCA via DCAM-API (pyDCAM). Windows-only; requires DCAM drivers.
  * `opencv` - Webcams/USB cameras via OpenCV.
+ * `basler` - Basler GigE/USB3 cameras via pypylon (bundles the pylon runtime). Select by `serial_number`. Hardware trigger: `trigger_mode` On, `trigger_source` Line1; `output_line_source` (default ExposureActive) drives the output line for frame logging.
 
 Driver requirements (summary):
 
@@ -133,6 +135,7 @@ Driver requirements (summary):
 - Dalsa/GenICam: Install a GenTL producer (e.g., Matrix Vision mvGenTL). Ensure `.cti` is discoverable (see `build_neucams/gentl/`).
 - Hamamatsu: Install DCAM-API (drivers + runtime). pyDCAM is used by the driver; runtime DLLs are included under `build_neucams/dcam/` in the installer.
 - OpenCV: Provided via Python dependency; no vendor SDK needed.
+- Basler: `pip install pypylon`. USB3 on Linux needs Basler's udev rules (pylon installer). GigE on Linux: `sudo sysctl -w net.core.rmem_max=33554432` (persist in /etc/sysctl.d); without it ~40% of frames arrive incomplete at 68 fps (acA1300-60gm).
 
 Each camera has its own parameters, there are some parameters that are common to all:
 

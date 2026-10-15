@@ -212,7 +212,7 @@ class NeuCamsWindow(QMainWindow):
                 self._add_widget(cam.get('description'), widget)
         else:
             for cam in self.preferences.get('cams', []):
-                if cam.get('driver') in ['avt', 'pco', 'genicam', 'hamamatsu']:
+                if cam.get('driver') in ['avt', 'pco', 'genicam', 'hamamatsu', 'basler']:
                     self._setup_camera(cam)
 
         # Arrange the camera windows in a grid

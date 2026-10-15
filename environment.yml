@@ -83,3 +83,4 @@ dependencies:
     - harvesters==1.4.3
     - vmbpy==1.1.1
     - pyDCAM==0.0.1
+    - pypylon==26.8
