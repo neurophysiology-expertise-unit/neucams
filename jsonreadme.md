@@ -23,7 +23,7 @@ Each camera lives inside the top‑level `"cams"` list:
   "cams": [
     {
       "description": "friendly-name",
-      "driver": "avt | hamamatsu | genicam | opencv",
+      "driver": "avt | hamamatsu | genicam | opencv | basler",
       "serial_number": "camera-serial",
       "params": { /* camera-specific keys below */ }
     }
@@ -273,6 +273,54 @@ This is **hardcoded** in:
     "auto_exposure": true,
     "brightness": 0.5,
     "contrast": 0.5
+  }
+}
+```
+
+---
+
+## Basler (ace GigE, ace 2 USB3) - `driver: "basler"`
+
+*pypylon backend (bundles the pylon runtime). One driver for classic ace (`ExposureTimeAbs`, 125 MHz timestamps) and ace 2 / USB3 (`ExposureTime`, ns timestamps); the driver picks whichever feature name the camera has. Full example: `neucams/jsonfiles/basler_example.json`.*
+
+### Supported parameters (and defaults)
+
+| Key                       |            Default | What it does                                                                         |
+| ------------------------- | -----------------: | ------------------------------------------------------------------------------------ |
+| **pixel\_format**         |          `"Mono8"` | `PixelFormat`; `Mono8` → uint8, anything else (e.g. `Mono12`) → uint16.               |
+| **frame\_rate**           |             `30.0` | FPS in **free-run** (`AcquisitionFrameRate[Abs]`); ignored when `trigger_mode="On"`.  |
+| **exposure**              |           `5000.0` | Exposure time **in microseconds**; auto exposure is switched off.                    |
+| **gain**                  |             `null` | `null` = leave the camera's gain alone; otherwise `GainRaw` (ace) or `Gain` dB (ace 2). |
+| **trigger\_mode**         |            `"Off"` | `"On"` = one frame per trigger (`FrameStart`); `"Off"` = free-run.                   |
+| **trigger\_source**       |          `"Line1"` | `"Line1"` (opto-isolated input), `"Software"`, `"Action1"`.                          |
+| **trigger\_activation**   |     `"RisingEdge"` | Edge polarity: `"RisingEdge"` or `"FallingEdge"`.                                    |
+| **output\_line\_source**  | `"ExposureActive"` | Signal on the output line (ace: `Out1`, ace 2: `Line2`), for logging frames on the rig; `null` = leave unchanged. |
+| **socket\_buffer\_kb**    |            `16384` | GigE only: stream-grabber socket buffer (KB). Capped by the OS `rmem_max`.          |
+| **n\_buffers**            |              `256` | Grab buffers in the host queue (`MaxNumBuffer`).                                     |
+
+**Notes**
+
+* **Frame id** = the camera's `BlockID`; **timestamp** = camera clock in **seconds**. Incomplete frames and `BlockID` gaps are counted and reported as a warning when the run stops.
+* **GigE on Linux:** run `sudo sysctl -w net.core.rmem_max=33554432` (persist in `/etc/sysctl.d/`). Without it the socket buffer stays at ~208 KB and an acA1300-60gm loses ~40% of frames at 68 fps; with it, 0 of 4200.
+* **GigE camera on its own port:** give the port a link-local address (`nmcli ... ipv4.method link-local`); the camera picks 169.254.x.x by itself.
+* **USB3 on Linux:** needs Basler's udev rules (installed with the pylon SDK).
+* Only one program may open a Basler camera: close pylon Viewer before starting neucams.
+* Ensure `exposure ≤ 1e6 / frame_rate` in free-run, or the camera lowers the frame rate.
+
+### Triggered Basler JSON (one frame per pulse on Line1)
+
+```json
+{
+  "description": "basler_a2A1920",
+  "driver": "basler",
+  "serial_number": "40393574",
+  "params": {
+    "pixel_format": "Mono8",
+    "exposure": 3000,
+    "trigger_mode": "On",
+    "trigger_source": "Line1",
+    "trigger_activation": "RisingEdge",
+    "output_line_source": "ExposureActive"
   }
 }
 ```
