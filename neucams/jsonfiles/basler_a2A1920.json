@@ -16,7 +16,7 @@
             }
         }
     ],
-    "recorder_params": { "compress": 0, "data_folder": "/home/euclient/neucams-test",
+    "recorder_params": { "compress": 0, "data_folder": "/mnt/data/neucams",
       "experiment_folder": "basler_a2A1920", "recorder": "binary", "recorder_sleep_time": 0.05 },
     "server_params": {
         "server": "udp",
