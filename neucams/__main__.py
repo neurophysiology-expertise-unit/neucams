@@ -12,6 +12,12 @@ def main():
     parser.add_argument('--verbose', action='store_true', help='Enable verbose (INFO) logging')
     args = parser.parse_args()
 
+    # spawn everywhere (Windows' only option). Linux defaults to fork, and a forked
+    # camera process inherits pylon's USB3 transport threads dead: the a2A1920 open
+    # blocked forever ("camera not ready").
+    import multiprocessing
+    multiprocessing.set_start_method('spawn', force=True)
+
     if args.verbose:
         # Root logger defaults to WARNING (see utils.py), which swallows every
         # display(..., 'info') status message. --verbose surfaces them.
