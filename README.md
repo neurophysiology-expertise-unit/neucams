@@ -129,6 +129,15 @@ Available camera drivers:
  * `opencv` - Webcams/USB cameras via OpenCV.
  * `basler` - Basler GigE/USB3 cameras via pypylon (bundles the pylon runtime). Select by `serial_number`. Hardware trigger: `trigger_mode` On, `trigger_source` Line1; `output_line_source` (default ExposureActive) drives the output line for frame logging.
 
+### Start recordings from 2p frame pulses (Arduino Due)
+
+`python -m neucams.due_trigger -p <preferences.json>` runs next to the GUI (`udp_enable: true`).
+It reads the rig Due (fictrac-arduino-loop firmware, `/dev/ttyACM0`): the first 2p frame pulse
+(`@I_<ms>_<count>`, shield In1) sends `folder=<YYMMDD_HHMMSS>` + `start`; no pulse for `--stop-after`
+seconds (default 1) sends `stop`. Every Due line of a run is logged with PC time to `due_events.csv`
+next to the video. The video starts ~0.5 s after the first pulse (GUI arm delay); PC time aligns runs,
+not single frames — for frame-level sync, wire the camera's exposure output to a Due input.
+
 Driver requirements (summary):
 
 - AVT: Install Allied Vision Vimba SDK (GigE/USB transport layers). Ensure `VimbaGigETL.cti`/`VimbaUSBTL.cti` available.
