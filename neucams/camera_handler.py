@@ -423,23 +423,24 @@ class CameraHandler(Process):
         except Exception:
             pass
             
-        # Ensure writer is ready BEFORE starting the camera if recording is requested
+        # Start the camera BEFORE opening the writer: the writer is a new process
+        # (~1.3 s to spawn and import), and frames grabbed meanwhile wait in the
+        # driver's buffers (basler: n_buffers) and are written once it is up.
+        # Writer-first lost that whole start-up time at the start of every run.
+        try:
+            if hasattr(self.cam, "start") and callable(self.cam.start):
+                self.cam.start()
+        except Exception:
+            pass
         try:
             if self.saving.is_set() and getattr(self, 'writer', None) is None:
                 try:
                     self.writer = self._open_writer()
-                    # Give filesystem a tiny moment to finish opening handles
-                    time.sleep(0.01)
                 except ValueError as e:
                     display(f"Cannot start recording: {e}", level='error')
                     self.saving.clear()  # Abort recording for this run
         except Exception as e:
             display(f"Unexpected error while preparing writer: {e}", level='warning')
-        try:    
-            if hasattr(self.cam, "start") and callable(self.cam.start):
-                self.cam.start()
-        except Exception:
-            pass
 
         mode_triggered = getattr(self.cam, "is_triggered", lambda: False)()
         src = str(getattr(self.cam, "params", {}).get("trigger_source", "")).lower()
