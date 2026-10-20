@@ -79,7 +79,7 @@ class NeuCamsWindow(QMainWindow):
         super().__init__()
 
         # Load the *new* Qt Designer layout
-        uic.loadUi(join(dirpath, 'UI_NeuCams.ui'), self)
+        uic.loadUi(join(dirpath, 'UI_neucams.ui'), self)
 
         # ---- Subtle styling improvements - closer to original ----
         self.setStyleSheet("""
