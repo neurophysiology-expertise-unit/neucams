@@ -18,6 +18,13 @@ def main():
     import multiprocessing
     multiprocessing.set_start_method('spawn', force=True)
 
+    # pip's opencv-python points QT_QPA_PLATFORM_PLUGIN_PATH at its own Qt plugins
+    # when cv2 is imported; PyQt5 then fails on a real display ("Could not load the
+    # Qt platform plugin xcb", core dump). Drop it so PyQt5 uses its own plugins.
+    import os
+    if 'cv2' in os.environ.get('QT_QPA_PLATFORM_PLUGIN_PATH', ''):
+        del os.environ['QT_QPA_PLATFORM_PLUGIN_PATH']
+
     if args.verbose:
         # Root logger defaults to WARNING (see utils.py), which swallows every
         # display(..., 'info') status message. --verbose surfaces them.
