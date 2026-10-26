@@ -251,6 +251,8 @@ class CameraHandler(Process):
         sig = inspect.signature(writer_cls)
         if 'frame_rate' in sig.parameters:
             cfg['frame_rate'] = self.cam.params.get('frame_rate', None)
+        if 'fourcc' in sig.parameters and self.writer_dict.get('fourcc'):
+            cfg['fourcc'] = self.writer_dict['fourcc']  # AVI codec, e.g. "XVID" or "MJPG"
         if 'compression' in sig.parameters:
             if 'compress' in self.writer_dict:
                 cfg['compression'] = self.writer_dict.get('compress')

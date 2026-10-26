@@ -8,6 +8,9 @@ GigE on Linux: raise net.core.rmem_max (e.g. 33554432) or pylon keeps a 208 KB
 socket buffer and drops ~40% of frames at 68 fps. `socket_buffer_kb` sets the
 stream grabber's buffer; it cannot exceed rmem_max.
 """
+import os
+import sys
+
 import numpy as np
 from pypylon import pylon, genicam
 
@@ -19,6 +22,7 @@ _NODES = {
     'exposure': ('ExposureTimeAbs', 'ExposureTime'),          # us
     'frame_rate': ('AcquisitionFrameRateAbs', 'AcquisitionFrameRate'),
     'gain': ('GainRaw', 'Gain'),
+    'resulting_rate': ('ResultingFrameRateAbs', 'ResultingFrameRate'),
 }
 _DTYPES = {'Mono8': np.uint8}  # anything else (Mono10/12/16) arrives as uint16
 
@@ -38,6 +42,10 @@ class BaslerCam(GenericCam):
     def __init__(self, cam_id=None, params=None, serial_number=None, **kwargs):
         super().__init__(name='Basler', cam_id=cam_id if cam_id is not None else serial_number,
                          params=params or {})
+        # With pfs_file (pylon Viewer "Save Features") the file sets the camera and only
+        # keys written in the JSON or changed in the GUI override it; defaults never do.
+        self._explicit = set(self.params)
+        self._pfs = self.params.get('pfs_file')
         defaults = {'frame_rate': 30.0, 'exposure': 5000.0, 'gain': None,
                     'trigger_mode': 'Off', 'trigger_source': 'Line1',
                     'trigger_activation': 'RisingEdge', 'output_line_source': 'ExposureActive',
@@ -60,7 +68,16 @@ class BaslerCam(GenericCam):
         self.cam.Open()
         self.cam_id = dev.GetSerialNumber()
         self.name = f"Basler {dev.GetModelName()}"
-        self._set('PixelFormat', self.params['pixel_format'])
+        if self._pfs:
+            pfs = os.path.expanduser(self._pfs)
+            if not os.path.isfile(pfs):
+                self.cam.Close()
+                raise FileNotFoundError(f"[Basler] pfs_file not found: {pfs}")
+            pylon.FeaturePersistence.Load(pfs, self.cam.GetNodeMap(), True)
+            display(f"[{self.name}] loaded camera features from {pfs}")
+            self._sync_frame_rate()
+        if self._use('pixel_format'):
+            self._set('PixelFormat', self.params['pixel_format'])
         self.format = {'width': self.cam.Width.Value, 'height': self.cam.Height.Value,
                        'dtype': _DTYPES.get(self.cam.PixelFormat.Value, np.uint16), 'n_chan': 1}
         if dev.GetDeviceClass() == 'BaslerGigE':
@@ -71,6 +88,22 @@ class BaslerCam(GenericCam):
                 f"{self.cam.PixelFormat.Value}")
 
     # ---------- feature access ----------
+    def _use(self, key):
+        """Apply this JSON key to the camera? Always without a pfs_file; with one, only if explicit."""
+        return not self._pfs or key in self._explicit
+
+    def _sync_frame_rate(self):
+        """With a pfs, report the camera's real values for keys the JSON did not set, so the GUI
+        shows them and the AVI gets the true rate (resulting rate, not the requested one)."""
+        if not self._pfs:
+            return
+        nm = self.cam.GetNodeMap()
+        for key, names in (('frame_rate', _NODES['resulting_rate']), ('exposure', _NODES['exposure']),
+                           ('gain', _NODES['gain'])):
+            node = nm.GetNode(names[0]) or nm.GetNode(names[1])
+            if key not in self._explicit and node is not None and genicam.IsReadable(node):
+                self.params[key] = round(float(node.GetValue()), 3)
+
     def _node(self, *names):
         nm = self.cam.GetNodeMap()
         for n in names:
@@ -98,25 +131,27 @@ class BaslerCam(GenericCam):
     def apply_params(self):
         if not self.is_connected():
             return
-        p = self.params
+        p, use = self.params, self._use
         triggered = self.is_triggered()
-        self._set('ExposureAuto', 'Off')
-        self._set(_NODES['exposure'], float(p['exposure']))
-        if p.get('gain') is not None:
+        if use('exposure'):
+            self._set('ExposureAuto', 'Off')
+            self._set(_NODES['exposure'], float(p['exposure']))
+        if use('gain') and p.get('gain') is not None:
             self._set('GainAuto', 'Off')
             self._set(_NODES['gain'], p['gain'])
         # free-run: the camera's own clock sets the rate; triggered: the trigger does
-        self._set('AcquisitionFrameRateEnable', 'false' if triggered else 'true')
-        if not triggered:
+        if use('trigger_mode'):
+            self._set('AcquisitionFrameRateEnable', 'false' if triggered else 'true')
+            self._set('TriggerSelector', 'FrameStart')
+            self._set('TriggerMode', 'On' if triggered else 'Off')
+            if triggered:
+                self._set('TriggerSource', p['trigger_source'])
+                self._set('TriggerActivation', p['trigger_activation'])
+        if use('frame_rate') and not triggered:
             self._set(_NODES['frame_rate'], float(p['frame_rate']))
-        self._set('TriggerSelector', 'FrameStart')
-        self._set('TriggerMode', 'On' if triggered else 'Off')
-        if triggered:
-            self._set('TriggerSource', p['trigger_source'])
-            self._set('TriggerActivation', p['trigger_activation'])
         # exposure-active out (classic ace: Out1, ace 2: Line2) for logging on the stim unit.
         # ace 2 Line2 is a GPIO that powers up as Input: LineSource alone drives nothing.
-        if p.get('output_line_source'):
+        if use('output_line_source') and p.get('output_line_source'):
             lines = list(self.cam.LineSelector.GetSymbolics())
             line = next((l for l in ('Out1', 'Line2') if l in lines), None)
             if line is None:
@@ -125,9 +160,11 @@ class BaslerCam(GenericCam):
                 self._set('LineSelector', line)
                 self._set('LineMode', 'Output')  # not writable on output-only Out1: skipped
                 self._set('LineSource', p['output_line_source'])
+        self._sync_frame_rate()
 
     def set_param(self, param, val):
         self.params[param] = val  # applied at acquisition start (handler calls apply_params)
+        self._explicit.add(param)
 
     def get_param(self, param):
         return self.params.get(param)
@@ -177,3 +214,18 @@ class BaslerCam(GenericCam):
             return r.GetArray().copy(), (block, r.TimeStamp / self._tick_hz)
         finally:
             r.Release()
+
+
+if __name__ == '__main__':
+    # Save the camera's current features (e.g. as left by pylon Viewer) to a .pfs for pfs_file:
+    #   python -m neucams.cams.basler_cam save <file.pfs> [serial]
+    if len(sys.argv) < 3 or sys.argv[1] != 'save':
+        sys.exit(__doc__ + "\nusage: python -m neucams.cams.basler_cam save <file.pfs> [serial]")
+    dev = _find_device(sys.argv[3] if len(sys.argv) > 3 else None, 0)
+    if dev is None:
+        sys.exit("no Basler camera found")
+    cam = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateDevice(dev))
+    cam.Open()
+    pylon.FeaturePersistence.Save(sys.argv[2], cam.GetNodeMap())
+    print(f"saved {dev.GetModelName()} {dev.GetSerialNumber()}: {cam.Width.Value}x{cam.Height.Value} -> {sys.argv[2]}")
+    cam.Close()
