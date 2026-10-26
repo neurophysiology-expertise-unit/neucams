@@ -40,8 +40,9 @@ def _find_device(serial_number=None, cam_id=None):
 
 class BaslerCam(GenericCam):
     def __init__(self, cam_id=None, params=None, serial_number=None, **kwargs):
+        # own copy: defaults and read-back values must not leak into the caller's config dict
         super().__init__(name='Basler', cam_id=cam_id if cam_id is not None else serial_number,
-                         params=params or {})
+                         params=dict(params or {}))
         # With pfs_file (pylon Viewer "Save Features") the file sets the camera and only
         # keys written in the JSON or changed in the GUI override it; defaults never do.
         self._explicit = set(self.params)

@@ -1,6 +1,8 @@
 # widgets.py
 import sys
 import os
+import glob
+import json
 import time
 from os import getcwd
 from os.path import dirname, join
@@ -12,7 +14,7 @@ import numpy as np
 from PyQt5 import uic
 from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtWidgets import (QAction, QApplication, QMainWindow, QMessageBox,
-                             QMdiSubWindow)
+                             QMdiSubWindow, QLabel, QPushButton, QFileDialog)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 # Delay before starting cameras via Master Start (ms): allows writers to arm.
 # Kept short: saving is armed before this timer fires, so the writer is ready
@@ -208,6 +210,7 @@ class NeuCamsWindow(QMainWindow):
                 cam_handler.start()
                 widget = CamWidget(cam_handler)
                 widget.is_triggered = self._compute_is_triggered(cam)
+                widget.on_load_pfs = self._reload_with_pfs
                 self.cam_widgets.append(widget)
                 self._add_widget(cam.get('description'), widget)
         else:
@@ -281,10 +284,56 @@ class NeuCamsWindow(QMainWindow):
         if cam_handler.camera_connected:
             widget = CamWidget(cam_handler)
             widget.is_triggered = self._compute_is_triggered(cam_dict)
+            widget.on_load_pfs = self._reload_with_pfs
             self.cam_widgets.append(widget)
             self._add_widget(cam_dict.get('description', 'Camera'), widget)
+            return widget
         else:
             cam_handler.close()
+
+    def _reload_with_pfs(self, widget, pfs_path):
+        """Restart one camera with a pylon .pfs (its image size may change, which sizes the frame
+        buffer at start), keep its save folder, and store the choice in the loaded config file."""
+        old = widget.cam_handler
+        cam_dict = dict(old.cam_dict)
+        # Loading pylon settings means using them: drop camera-feature keys (exposure, frame_rate,
+        # gain, trigger...) that would override the .pfs; keep only neucams' own settings.
+        keep = ('n_buffers', 'socket_buffer_kb', 'verbose')
+        params = {k: v for k, v in (cam_dict.get('params') or {}).items() if k in keep}
+        cam_dict['params'] = {**params, 'pfs_file': pfs_path}
+        folder = old.get_folder_path()
+        widget._timer.stop()
+        for sub in self.mdiArea.subWindowList():
+            if sub.widget() is widget:
+                self.mdiArea.removeSubWindow(sub)
+                sub.close()
+        self.cam_widgets.remove(widget)
+        old.close()
+        old.join(5)
+        saved_params = dict(cam_dict['params'])
+        new = self._setup_camera(cam_dict)
+        if new is None:
+            QMessageBox.critical(self, 'Camera not restarted',
+                                 f'Could not open the camera with\n{pfs_path}\nSee the log.')
+            return
+        if folder:
+            new.cam_handler.set_folder_path(folder)
+        for c in self.preferences.get('cams', []):
+            if c.get('serial_number') == cam_dict.get('serial_number') and \
+                    c.get('description') == cam_dict.get('description'):
+                c['params'] = saved_params
+        cfg = self.preferences.get('user_config_path')
+        saved = ''
+        if cfg:
+            try:
+                with open(cfg, 'w') as f:
+                    json.dump({k: v for k, v in self.preferences.items() if k != 'user_config_path'},
+                              f, indent=4)
+                saved = f'\n\nSaved in {cfg} (used at the next start too).'
+            except OSError as e:
+                saved = f'\n\nNot saved to {cfg}: {e}'
+        self.mdiArea.tileSubWindows()
+        QMessageBox.information(self, 'pylon settings loaded', f'Camera restarted with\n{pfs_path}{saved}')
 
     def _add_widget(self, name, widget):
         active_subwindows = [e.objectName() for e in self.mdiArea.subWindowList()]
@@ -1059,6 +1108,20 @@ class CamWidget(BaseCameraWidget):
             self.start_stop_pushButton.setMinimumHeight(34)
             self.start_stop_pushButton.setMinimumWidth(90)
 
+        # Exposure next to fps / frame count
+        self.exposure_label = QLabel('exp -', self)
+        self.controlLayout.insertWidget(self.controlLayout.indexOf(self.frame_nr_label) + 1,
+                                        self.exposure_label)
+
+        # Basler: load a pylon Viewer settings file (.pfs); the window sets on_load_pfs
+        self.on_load_pfs = None
+        if str(getattr(cam_handler, 'cam_dict', {}).get('driver', '')).lower() == 'basler':
+            self.load_pfs_pushButton = QPushButton('Load pylon settings…', self)
+            self.load_pfs_pushButton.setToolTip('Load a pylon Viewer "Save Features" file (.pfs) '
+                                                'into this camera (camera must be stopped)')
+            self.load_pfs_pushButton.clicked.connect(self._load_pfs)
+            self.topButtonLayout.addWidget(self.load_pfs_pushButton)
+
         # --- Connections ---
         self.start_stop_pushButton.clicked.connect(self._start_stop_toggled)
         self.record_checkBox.stateChanged.connect(self._record)
@@ -1157,6 +1220,22 @@ class CamWidget(BaseCameraWidget):
             self._prev_time = current_time
             self._prev_frame_nr = current_frame
         self.frame_nr_label.setText(f"frame: {current_frame}")
+        exp = self.cam_handler.exposure_us.value
+        self.exposure_label.setText('exp -' if exp != exp else f"exp {exp / 1000:.2f} ms")
+
+    def _load_pfs(self):
+        h = self.cam_handler
+        if h.start_trigger.is_set() and not h.stop_trigger.is_set():
+            QMessageBox.warning(self, 'Camera running', 'Stop the camera before loading pylon settings.')
+            return
+        from neucams.utils import get_default_folder
+        folder = get_default_folder()
+        pfs = sorted(glob.glob(join(folder, '*.pfs')), key=os.path.getmtime)
+        start = pfs[-1] if pfs else folder  # preselect the newest .pfs
+        path, _ = QFileDialog.getOpenFileName(self, 'Load pylon Viewer settings (.pfs)', start,
+                                              'pylon feature files (*.pfs);;All files (*)')
+        if path and self.on_load_pfs:
+            self.on_load_pfs(self, path)
 
     def _sync_record_checkbox(self):
         """Sync the record checkbox with the actual saving state from camera handler"""

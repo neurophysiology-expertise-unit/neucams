@@ -67,6 +67,8 @@ class CameraHandler(Process):
         self.cam_param_get_flag = Event()
         # Capability flags
         self.trigger_supported = Value('b', False)
+        # Exposure (us) as the camera reports it, for the GUI; NaN = unknown
+        self.exposure_us = Value('d', float('nan'))
         
         self.handler_closed = Event()
         
@@ -124,6 +126,7 @@ class CameraHandler(Process):
 
             self.frame = Array(cdtype, np.zeros([height, width, n_chan], dtype=dtype).ravel())
             self.format = {'dtype': dtype, 'height': height, 'width': width, 'n_chan': n_chan, 'cdtype': cdtype}
+            self._publish_exposure(cam)
             self._init_buffer()
             # Detect trigger support best-effort once during init
             try:
@@ -144,6 +147,12 @@ class CameraHandler(Process):
 
 
             
+    def _publish_exposure(self, cam):
+        try:
+            self.exposure_us.value = float(cam.params.get('exposure'))
+        except (TypeError, ValueError, AttributeError):
+            self.exposure_us.value = float('nan')
+
     def _init_buffer(self):
         self.img = np.frombuffer(self.frame.get_obj(), dtype = self.format['cdtype'])\
                         .reshape([self.format['height'], self.format['width'], self.format['n_chan']])
@@ -407,6 +416,7 @@ class CameraHandler(Process):
                 self.cam.apply_params()
         except Exception as e:
             display(f"Failed to apply camera params before start: {e}", level='error')
+        self._publish_exposure(self.cam)
 
         # --- make sure we're disarmed before arming again ---
         # camera_handler.py (inside wait_for_trigger)
