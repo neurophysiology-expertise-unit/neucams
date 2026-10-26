@@ -287,6 +287,7 @@ This is **hardcoded** in:
 
 | Key                       |            Default | What it does                                                                         |
 | ------------------------- | -----------------: | ------------------------------------------------------------------------------------ |
+| **pfs\_file**             |             `null` | pylon Viewer settings file (*File → Save Features…*, `.pfs`), loaded when the camera opens. With it, **only keys written in this JSON (or changed in the GUI) override the file** — ROI, exposure, gain, lines etc. come from the `.pfs`; `frame_rate`/`exposure`/`gain` are read back from the camera (frame_rate = resulting rate, used for the AVI). No pylon Viewer file? `python -m neucams.cams.basler_cam save <file.pfs> [serial]` saves the camera's current settings. |
 | **pixel\_format**         |          `"Mono8"` | `PixelFormat`; `Mono8` → uint8, anything else (e.g. `Mono12`) → uint16.               |
 | **frame\_rate**           |             `30.0` | FPS in **free-run** (`AcquisitionFrameRate[Abs]`); ignored when `trigger_mode="On"`.  |
 | **exposure**              |           `5000.0` | Exposure time **in microseconds**; auto exposure is switched off.                    |
@@ -306,6 +307,18 @@ This is **hardcoded** in:
 * **USB3 on Linux:** needs Basler's udev rules (installed with the pylon SDK).
 * Only one program may open a Basler camera: close pylon Viewer before starting neucams.
 * Ensure `exposure ≤ 1e6 / frame_rate` in free-run, or the camera lowers the frame rate.
+
+### Basler JSON using pylon Viewer settings, recording AVI
+
+```json
+{
+  "cams": [{ "description": "basler_a2A1920", "driver": "basler", "serial_number": "40393574",
+             "params": { "pfs_file": "/home/euclient/neucams/my_settings.pfs" } }],
+  "recorder_params": { "data_folder": "/mnt/data/neucams", "recorder": "opencv", "fourcc": "XVID" }
+}
+```
+
+`recorder: "opencv"` writes `.avi`; `fourcc` picks the codec (`XVID` default, `MJPG` = bigger files, less CPU).
 
 ### Triggered Basler JSON (one frame per pulse on Line1)
 
