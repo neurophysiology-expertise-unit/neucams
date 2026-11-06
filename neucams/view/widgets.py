@@ -14,7 +14,7 @@ import numpy as np
 from PyQt5 import uic
 from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtWidgets import (QAction, QApplication, QMainWindow, QMessageBox,
-                             QMdiSubWindow, QLabel, QPushButton, QFileDialog)
+                             QMdiSubWindow, QLabel, QPushButton, QFileDialog, QSpinBox)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 # Delay before starting cameras via Master Start (ms): allows writers to arm.
 # Kept short: saving is armed before this timer fires, so the writer is ready
@@ -154,6 +154,22 @@ class NeuCamsWindow(QMainWindow):
         self.trigger_master_check.stateChanged.connect(lambda _: self._broadcast_trigger_setting())
         self.mainToolBar.addWidget(self.trigger_master_check)
 
+        # Record duration: stop all cameras this many seconds after they start (UDP/2p
+        # trigger or Master Start); 0 = record until Stop. Default from recorder_params.
+        from PyQt5.QtWidgets import QLabel  # this method imports QLabel locally below too
+        self.mainToolBar.addWidget(QLabel('  Record for (s): ', self))
+        self.duration_spin = QSpinBox(self)
+        self.duration_spin.setRange(0, 24 * 3600)
+        self.duration_spin.setSpecialValueText('until Stop')
+        self.duration_spin.setToolTip('Seconds to record after the start (2p trigger or Master Start); '
+                                      '0 = until Stop')
+        self.duration_spin.setValue(int((self.preferences.get('recorder_params') or {})
+                                        .get('record_duration_s', 0)))
+        self.mainToolBar.addWidget(self.duration_spin)
+        self._duration_timer = QTimer(self)
+        self._duration_timer.setSingleShot(True)
+        self._duration_timer.timeout.connect(self._duration_elapsed)
+
         # --- Global Run Name Controls ---
         from PyQt5.QtWidgets import QLineEdit, QPushButton, QLabel, QWidget, QHBoxLayout, QVBoxLayout, QSizePolicy
         # Container widget to allow vertical layout inside the horizontal toolbar
@@ -290,6 +306,11 @@ class NeuCamsWindow(QMainWindow):
             return widget
         else:
             cam_handler.close()
+
+    def _duration_elapsed(self):
+        self._log(f"Record duration {self.duration_spin.value()} s reached: stopping")
+        if not self._all_cameras_stopped():
+            self.actionMasterStartStop.setChecked(False)
 
     def _reload_with_pfs(self, widget, pfs_path):
         """Restart one camera with a pylon .pfs (its image size may change, which sizes the frame
@@ -501,6 +522,10 @@ class NeuCamsWindow(QMainWindow):
                     if hasattr(self, "actionMasterStartStop"):
                         if not self._all_cameras_running():
                             self.actionMasterStartStop.setChecked(True)
+                        elif self.duration_spin.value() > 0:
+                            # already previewing: saving starts now, so count the duration from here
+                            self._duration_timer.start(self.duration_spin.value() * 1000)
+                            self._log(f"Recording for {self.duration_spin.value()} s")
                     # small ACK
                     if getattr(self, "server", None):
                         try:
@@ -752,11 +777,16 @@ class NeuCamsWindow(QMainWindow):
                         if started and hasattr(w, "_set_stop_text"):
                             w._set_stop_text()
                 self._update_master_action_enabled()
+                secs = self.duration_spin.value()
+                if secs > 0:
+                    self._duration_timer.start(secs * 1000)
+                    self._log(f"Recording for {secs} s")
 
             # Use the constant so it’s easy to tune
             QTimer.singleShot(ARM_DELAY_MS, _do_start_all)
 
         else:
+            self._duration_timer.stop()
             # Stop all cameras
             for w in self.cam_widgets:
                 ch = w.cam_handler
