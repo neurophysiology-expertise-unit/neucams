@@ -1106,8 +1106,9 @@ class NeuCamsWindow(QMainWindow):
                 pass
         time.sleep(0.5)
         display("NeuCams out, bye!")
+        # Only ask Qt to quit: app.exec_() returns and main() exits after the event loop
+        # has unwound. sys.exit() here ran interpreter teardown under a live Qt (exit segfaults).
         QApplication.quit()
-        sys.exit()
 
 
 class CamWidget(BaseCameraWidget):
