@@ -101,9 +101,19 @@ class BaslerCam(GenericCam):
         nm = self.cam.GetNodeMap()
         for key, names in (('frame_rate', _NODES['resulting_rate']), ('exposure', _NODES['exposure']),
                            ('gain', _NODES['gain'])):
-            node = nm.GetNode(names[0]) or nm.GetNode(names[1])
-            if key not in self._explicit and node is not None and genicam.IsReadable(node):
-                self.params[key] = round(float(node.GetValue()), 3)
+            if key in self._explicit:
+                continue
+            for name in names:  # classic ace and ace 2 names; a missing one may raise, not return None
+                try:
+                    node = nm.GetNode(name)
+                    if node is not None and genicam.IsReadable(node):
+                        self.params[key] = round(float(node.GetValue()), 3)
+                        break
+                except Exception:
+                    continue
+            else:
+                display(f"[{self.name}] could not read {key} back from the camera "
+                        f"({' / '.join(names)}); using {self.params.get(key)}", level='warning')
 
     def _node(self, *names):
         nm = self.cam.GetNodeMap()

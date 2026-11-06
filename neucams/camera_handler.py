@@ -260,6 +260,8 @@ class CameraHandler(Process):
         sig = inspect.signature(writer_cls)
         if 'frame_rate' in sig.parameters:
             cfg['frame_rate'] = self.cam.params.get('frame_rate', None)
+            # print: the camera process is spawned and does not inherit --verbose logging
+            print(f"[{self.cam.name}] writer frame rate (video file tag): {cfg['frame_rate']}", flush=True)
         if 'fourcc' in sig.parameters and self.writer_dict.get('fourcc'):
             cfg['fourcc'] = self.writer_dict['fourcc']  # AVI codec, e.g. "XVID" or "MJPG"
         if 'compression' in sig.parameters:

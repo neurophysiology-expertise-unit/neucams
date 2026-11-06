@@ -11,6 +11,6 @@ DEFAULT="$HOME/neucams/default.json"
 [ -f "$DEFAULT" ] || DEFAULT=neucams/jsonfiles/basler_a2A1920.json
 PREF="${1:-${NEUCAMS_PREF:-$DEFAULT}}"
 echo "neucams $(git log --oneline -1 2>/dev/null)  prefs: $PREF"
-"$PY" -m neucams -p "$PREF"
+"$PY" -m neucams --verbose -p "$PREF"
 echo "neucams closed. Press ENTER to close this window..."
 read
