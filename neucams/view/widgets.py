@@ -149,7 +149,11 @@ class NeuCamsWindow(QMainWindow):
 
         # --- Universal Trigger control ---
         from PyQt5.QtWidgets import QCheckBox
-        self.trigger_master_check = QCheckBox('Trigger', self)
+        self.trigger_master_check = QCheckBox('HW trigger: 1 frame per pulse', self)
+        self.trigger_master_check.setToolTip(
+            'Camera takes ONE frame per pulse on its trigger input (Line1).\n'
+            'Leave OFF to free-run at the set frame rate - also when a 2p pulse\n'
+            'only starts the recording (neucams 2p trigger).')
         self.trigger_master_check.setChecked(False)  # default free-run
         self.trigger_master_check.stateChanged.connect(lambda _: self._broadcast_trigger_setting())
         self.mainToolBar.addWidget(self.trigger_master_check)
